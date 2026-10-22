@@ -1,0 +1,21 @@
+# Credenciais do Wi-Fi: cada um cria o seu a partir do config_exemplo.py
+esp32/config.py
+
+# Banco de dados gerado ao executar
+*.db
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*.mpy
+.venv/
+venv/
+.env
+
+# Editores e sistema (a configuração do MicroPico tem caminhos de cada máquina)
+.vscode/
+.micropico
+.idea/
+.DS_Store
+Thumbs.db
