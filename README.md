@@ -153,6 +153,7 @@ na auditoria. Essa regra será detalhada na Entrega 2.
 | Display OLED SSD1306 0,96" (I2C) | Catálogo, carrinho e resultado |
 | Teclado matricial 4x3 | Escolher produtos (0–9), limpar (`*`) e pagar (`#`) |
 | Buzzer ativo | Bipe de aprovação e de recusa |
+| LED de status | Wi-Fi: pisca conectando, aceso conectado |
 | LED verde + resistor 220 Ω | Venda aprovada |
 
 ### Mapa de pinos (proposta — confirmar com os componentes da bancada)
@@ -171,12 +172,12 @@ na auditoria. Essa regra será detalhada na Entrega 2.
 | Teclado 4x3 | Linhas L1–L4 | 13, 14, 27, 26 |
 | | Colunas C1–C3 | 25, 33, 32 |
 | Buzzer | + | 17 |
-| LED verde | ânodo (via 220 Ω) | 16 |
-| LED da placa | — | 2 (status do Wi-Fi, usado pelo `boot.py`) |
+| LED de status do Wi-Fi | — | 16 (usado pelo `boot.py`; testado na placa da equipe) |
+| LED verde | ânodo (via 220 Ω) | 2 |
 
 Os pinos foram escolhidos para evitar os *strapping pins* (0, 2, 12 e 15), que
 interferem na inicialização da placa quando estão ligados a algum componente. A
-exceção é o GPIO 2, usado só pelo LED que já vem na placa. Se o teclado for 4x4, a
+exceção é o GPIO 2, que aceita um LED ligado ao GND sem atrapalhar o boot. Se o teclado for 4x4, a
 quarta coluna pode ir no GPIO 35 com um resistor de *pull-up* externo de 10 kΩ,
 porque os GPIOs 34–39 não têm *pull-up* interno.
 
@@ -310,7 +311,52 @@ Copie `esp32/config_exemplo.py` para `esp32/config.py` e preencha `WIFI_SSID` e
 `WIFI_SENHA`. O ESP32 só conecta em redes de **2,4 GHz**. O `config.py` não vai
 para o GitHub (está no `.gitignore`).
 
-#### 3. Enviar para a placa — opção A: VS Code + MicroPico (recomendada)
+#### 3. Enviar para a placa — opção A: Thonny (usada pela equipe)
+
+**Conectar**
+
+1. Ligue o ESP32 na USB.
+2. No canto inferior direito do Thonny, troque o interpretador para
+   **MicroPython (ESP32)** e escolha a porta da placa. Se a porta não aparecer,
+   use *Ferramentas > Opções > Intérprete*.
+3. O **Shell**, na parte de baixo, deve mostrar o prompt `>>>`.
+
+**Enviar os arquivos**
+
+1. Ative a visão de arquivos em **Exibir > Arquivos**. Aparecem dois painéis:
+   *Este computador*, em cima, e *Dispositivo MicroPython*, embaixo.
+2. No painel do computador, abra a pasta `esp32` do repositório.
+3. Selecione `wifi.py`, `config.py` e `boot.py`, clique com o botão direito e
+   escolha **Enviar para /** (*Upload to /*).
+4. Confira se os três aparecem no painel **Dispositivo MicroPython**.
+
+Também funciona abrir cada arquivo e usar *Arquivo > Salvar como >
+Dispositivo MicroPython*, com o mesmo nome, como no guia do professor.
+
+**Ver o boot rodando**
+
+O `boot.py` só roda quando a placa **reinicia**. Com a placa conectada ao Thonny:
+
+- clique no **Shell** e pressione **`Ctrl+D`** (reinício suave). A placa roda o
+  `boot.py` e as mensagens aparecem no Shell.
+
+Evite o botão **EN** da placa com o Thonny aberto: ele reinicia também a
+conexão USB, e as primeiras mensagens costumam se perder. Se o Thonny mostrar
+*"Connection lost"* ou *"Device is busy"*, clique no botão vermelho **Parar**
+(*Stop/Restart backend*).
+
+**Cuidados**
+
+- O botão **Executar (▶)** roda o arquivo aberto **sem salvá-lo na placa**. Serve
+  para testar, mas o `boot.py` precisa estar salvo no dispositivo para rodar
+  sozinho quando a placa ligar.
+- O `boot.py` importa o `wifi.py`: se o `wifi.py` não estiver na placa, aparece
+  `ImportError: no module named 'wifi'`.
+- Depois de alterar um arquivo no computador, **envie de novo**: o Thonny não
+  sincroniza sozinho.
+- Se o Shell parar de responder, clique no Shell e pressione `Ctrl+C`.
+
+#### 3. Enviar para a placa — opção B: VS Code + MicroPico
 
 1. Instale a extensão **MicroPico** (`Ctrl+Shift+X`).
 2. Abra a **pasta raiz do repositório** (`Arquivo > Abrir Pasta`).
@@ -328,15 +374,6 @@ para o GitHub (está no `.gitignore`).
 6. `Ctrl+Shift+P` → **MicroPico: Upload project to board**.
 7. Abra o console em **MicroPico: Toggle Execution Terminal / REPL** e reinicie a
    placa (botão **EN**).
-
-#### 3. Enviar para a placa — opção B: Thonny
-
-1. No canto inferior direito, troque o interpretador para **MicroPython (ESP32)** e
-   escolha a porta da placa (ou em *Ferramentas > Opções > Intérprete*). O Shell
-   deve mostrar o prompt `>>>`.
-2. Abra `boot.py`, `wifi.py` e `config.py` e salve cada um em
-   **Dispositivo MicroPython**, com o mesmo nome (*Arquivo > Salvar como*).
-3. Reinicie a placa (botão **EN** ou `Ctrl+D` no Shell) e acompanhe o console.
 
 #### 3. Enviar para a placa — opção C: linha de comando
 
@@ -361,7 +398,7 @@ mpremote repl
 [BOOT] Inicialização concluída.
 ```
 
-O LED azul da placa **pisca** enquanto conecta e fica **aceso** quando a conexão
+O LED de status (GPIO 16) **pisca** enquanto conecta e fica **aceso** quando a conexão
 dá certo.
 
 | Mensagem | Causa provável |
@@ -390,10 +427,10 @@ terminal segue em modo offline.
 
 ### Entrega 1 — checklist
 
-- [ ] Repositório público criado
-- [ ] README inicial
-- [ ] Diagrama de arquitetura em blocos
-- [ ] `boot.py` conectando ao Wi-Fi na bancada
+- [x] Repositório público criado
+- [x] README inicial
+- [x] Diagrama de arquitetura em blocos
+- [x] `boot.py` conectando ao Wi-Fi na bancada
 
 ---
 
