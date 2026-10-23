@@ -22,8 +22,8 @@ FUSO_HORARIO_HORAS = -3   # horário de Brasília, usado só para exibir a hora
 
 
 CAMPOS_OBRIGATORIOS = ("WIFI_SSID", "WIFI_SENHA")
-VALOR_DE_EXEMPLO = "nome_da_rede"
-SENHA_DE_EXEMPLO = "senha_da_rede"
+VALOR_DE_EXEMPLO = "digite sua rede"
+SENHA_DE_EXEMPLO = "digite sua senha"
 
 
 def carregar_configuracao():
@@ -45,23 +45,28 @@ def carregar_configuracao():
     return config
 
 
-def sincronizar_relogio():
+def sincronizar_relogio(tentativas=3):
     """Acerta o relógio pela internet (NTP).
 
     As vendas feitas offline precisam de data e hora corretas para entrar
     na ordem certa quando forem enviadas. O relógio interno guarda UTC.
     """
-    try:
-        import ntptime
-        ntptime.settime()
-        ano, mes, dia, hora, minuto = time.localtime(
-            time.time() + FUSO_HORARIO_HORAS * 3600)[:5]
-        print("[BOOT] Relógio sincronizado: {:02d}/{:02d}/{} {:02d}:{:02d}".format(
-            dia, mes, ano, hora, minuto))
-        return True
-    except Exception as erro:   # sem internet, DNS ou servidor NTP fora
-        print("[BOOT] Não foi possível sincronizar o relógio: {}".format(erro))
-        return False
+    import ntptime
+    ntptime.host = "pool.ntp.br"   # servidor brasileiro, responde mais rápido daqui
+    ultimo_erro = None
+    for _ in range(tentativas):
+        try:
+            ntptime.settime()
+            ano, mes, dia, hora, minuto = time.localtime(
+                time.time() + FUSO_HORARIO_HORAS * 3600)[:5]
+            print("[BOOT] Relógio sincronizado: {:02d}/{:02d}/{} {:02d}:{:02d}".format(
+                dia, mes, ano, hora, minuto))
+            return True
+        except Exception as erro:   # DNS ainda não pronto, sem internet ou NTP fora
+            ultimo_erro = erro
+            time.sleep(1)
+    print("[BOOT] Não foi possível sincronizar o relógio: {}".format(ultimo_erro))
+    return False
 
 
 def iniciar():

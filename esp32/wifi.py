@@ -16,7 +16,7 @@ from machine import Pin
 TEMPO_LIMITE_MS = 15000      # espera máxima por tentativa
 TENTATIVAS = 3
 PAUSA_ENTRE_TENTATIVAS_MS = 1000
-PINO_LED_STATUS = 2          # LED azul da placa na maioria dos DevKits ESP32
+PINO_LED_STATUS = 16         # LED da placa usada pela equipe (testado)
 
 _wlan = network.WLAN(network.STA_IF)
 _led = Pin(PINO_LED_STATUS, Pin.OUT)
