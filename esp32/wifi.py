@@ -35,7 +35,10 @@ _MENSAGENS_DE_STATUS = {
     "STAT_GOT_IP": "conectado",
 }
 
-# Senha errada não melhora tentando de novo: desiste na hora
+# "Senha incorreta". Atenção: com sinal fraco (redes com vários roteadores de
+# mesmo nome, como a da faculdade) o ESP32 também devolve esse código com a
+# senha CERTA. Por isso ele não desiste na hora: conta como tentativa falha e
+# tenta de novo; só depois de todas as tentativas é que desiste.
 _STATUS_SEM_SOLUCAO = ("STAT_WRONG_PASSWORD",)
 
 # Falhas que encerram a tentativa atual. Não adianta esperar o tempo
@@ -99,11 +102,10 @@ def conectar(ssid, senha, tentativas=TENTATIVAS, tempo_limite_ms=TEMPO_LIMITE_MS
                 break
             status = _wlan.status()
             if _falha_sem_solucao(status):
-                print("[Wi-Fi] {}. Confira o config.py.".format(
-                    descrever_status(status).capitalize()))
-                _desconectar()
-                _led.off()
-                return False
+                mensagem = descrever_status(status)   # MicroPython não tem str.capitalize()
+                print("[Wi-Fi] {}{}. Se persistir, confira o config.py.".format(
+                    mensagem[:1].upper(), mensagem[1:]))
+                break
             if _falha_da_tentativa(status):
                 print("[Wi-Fi] Falhou: {}.".format(descrever_status(status)))
                 break
