@@ -51,6 +51,9 @@ PRODUTOS = {
 # >>> Troque os UIDs pelos dos cartões da bancada. Quando um cartão
 #     desconhecido for lido, o servidor mostra o UID dele no console.
 CARTOES = {
+    # Cartões da bancada (lidos com esp32/exemplos/ler_cartao.py em 05/11)
+    "532F07FE": {"titular": "Cartao branco", "saldo_centavos": 100000, "bloqueado": False},
+    "93892B4F": {"titular": "Chaveiro azul", "saldo_centavos": 500, "bloqueado": False},
     "A1B2C3D4": {"titular": "Amanda Silva", "saldo_centavos": 100000, "bloqueado": False},
     "11223344": {"titular": "Caio Ferreira", "saldo_centavos": 1000, "bloqueado": False},
     "DEADBEEF": {"titular": "Douglas Alves", "saldo_centavos": 50000, "bloqueado": True},

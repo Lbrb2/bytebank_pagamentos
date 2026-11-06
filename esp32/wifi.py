@@ -81,6 +81,13 @@ def conectar(ssid, senha, tentativas=TENTATIVAS, tempo_limite_ms=TEMPO_LIMITE_MS
         _led.on()
         return True
 
+    # Logo depois de ligar, algumas placas respondem "rede não encontrada"
+    # se o rádio ainda não fez nenhuma busca. Uma busca (scan) antes resolve.
+    try:
+        _wlan.scan()
+    except OSError:
+        pass
+
     for tentativa in range(1, tentativas + 1):
         print("[Wi-Fi] Tentativa {}/{}: conectando a '{}'...".format(
             tentativa, tentativas, ssid))
