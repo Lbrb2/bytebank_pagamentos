@@ -135,11 +135,38 @@ isso, um terminal adulterado poderia vender qualquer produto por qualquer valor.
 | ESP32 | **Fila FIFO** com índice de início (gravada na flash) | Vendas feitas sem conexão, enviadas na ordem em que aconteceram quando a rede voltar | enfileirar e desenfileirar O(1) |
 | ESP32 | **Tabela hash** (dicionário) | Catálogo local: código do produto → produto | busca O(1) |
 | ESP32 | **Tabela hash** + **pilha** | Carrinho: quantidade por produto (hash) e ordem das inclusões (pilha), para o `*` desfazer a última | incluir e desfazer O(1) |
-| Backend | **Tabela hash** | UID do cartão RFID → conta | busca O(1) |
 | ESP32 | Fila de contingência usada como **deque** | O modo operador cancela a última venda tirando-a do **fim** da fila, antes de ser enviada | remover do fim O(1) |
-| Backend | **Tabela hash** | Código → produto (preço e estoque) | busca O(1) |
-| Backend | **Tabela hash** | `id_transacao` → venda: impede cobrança em dobro e localiza a venda no estorno | busca O(1) |
-| Backend | **Fila FIFO** (`deque`) por terminal | Comandos do gerente, executados na ordem em que foram enviados | inserir e retirar O(1) |
+| Backend | **Tabela hash** implementada do zero (`backend/tabela_hash.py`) | UID do cartão RFID → cartão, conta e titular | busca O(1) |
+| Backend | **Tabela hash** | Código → produto (nome e preço) | busca O(1) |
+| Backend | **Tabela hash** | `id_transacao` → resposta já enviada: impede cobrança em dobro | busca O(1) |
+| Backend | **Tabela hash** | Código do terminal (`POS-01`) → id no banco | busca O(1) |
+| Banco | **Fila FIFO** por terminal (tabela `comandos`, em ordem de `id`) | Comandos do gerente, executados na ordem em que foram enviados | frente da fila pelo índice |
+
+### Tabela hash do backend
+
+O backend usa uma tabela hash **escrita pela equipe**, em vez do `dict` pronto do
+Python, para mostrar o mecanismo:
+
+```
+chave "532F07FE" --FNV-1a--> 2459436973 --resto da divisão por 16--> balde 13
+
+baldes:  0 []   ...   6 [("7", Chocolate)]   ...   13 [("532F07FE", cartão branco)]   ...
+```
+
+- **Função de hash FNV-1a:** transforma a chave num número; chaves parecidas
+  (`POS-01`, `POS-02`) caem em baldes bem diferentes.
+- **Colisões por encadeamento separado:** duas chaves no mesmo balde ficam numa
+  pequena lista dentro dele.
+- **Redimensionamento:** quando passa de 75% de ocupação (fator de carga), o
+  número de baldes dobra. Assim cada balde tem 0 ou 1 elemento em média, e
+  buscar, inserir e remover custam **O(1) em média**.
+- `GET /diagnostico/tabelas-hash` mostra, com o servidor no ar, o tamanho, o
+  fator de carga e o maior balde de cada tabela.
+
+As tabelas hash ficam em memória e respondem "de quem é este cartão?" sem ir ao
+banco. **Saldo e estoque**, que mudam a cada venda, são lidos e alterados
+**dentro da transação do banco**, que é a fonte da verdade (ver
+[Modelo de dados](#modelo-de-dados)).
 
 ### Por que a fila não usa `pop(0)`
 
@@ -230,11 +257,11 @@ mostrando a versão do chip e o UID de cada cartão aproximado. Para usar: envie
 
 ---
 
-## Modelo de dados (preliminar)
+## Modelo de dados
 
-Versão inicial, que será detalhada no `schema.sql` da Entrega 3. Os valores em
-dinheiro serão guardados **em centavos** (`INTEGER`), para evitar os erros de
-arredondamento de números com casas decimais.
+O modelo completo está em [`database/schema.sql`](database/schema.sql), e a carga
+de teste em [`database/seed.sql`](database/seed.sql). Banco: **SQLite**, um único
+arquivo (`database/bytebank.db`, criado sozinho na primeira execução do backend).
 
 ```mermaid
 erDiagram
@@ -242,11 +269,13 @@ erDiagram
     CONTAS ||--o{ CARTOES : tem
     CARTOES ||--o{ TRANSACOES : paga
     TERMINAIS ||--o{ TRANSACOES : registra
-    TRANSACOES ||--|{ ITENS_TRANSACAO : contem
+    TRANSACOES ||--o{ ITENS_TRANSACAO : contem
     PRODUTOS ||--o{ ITENS_TRANSACAO : vendido_em
+    TRANSACOES ||--o| ESTORNOS : cancelada_por
     TERMINAIS ||--o{ TELEMETRIA : envia
     TERMINAIS ||--o{ COMANDOS : recebe
     TERMINAIS ||--o{ LOGS_AUDITORIA : gera
+    CONTAS ||--o{ LOGS_AUDITORIA : movimenta
 
     CLIENTES {
         int id PK
@@ -256,34 +285,37 @@ erDiagram
     CONTAS {
         int id PK
         int cliente_id FK
-        int saldo_centavos
+        int saldo_centavos "CHECK >= 0"
     }
     CARTOES {
         int id PK
         int conta_id FK
         text uid_rfid UK
-        text status
+        text status "ativo | bloqueado"
     }
     PRODUTOS {
         int id PK
-        text codigo UK
+        text codigo UK "1 a 9"
         text nome
-        int preco_centavos
-        int estoque
+        int preco_centavos "CHECK > 0"
+        int estoque "CHECK >= 0"
     }
     TERMINAIS {
         int id PK
-        text codigo UK
-        text status
+        text codigo UK "POS-01"
+        text status "ativo | bloqueado"
+        text ultimo_contato
     }
     TRANSACOES {
         int id PK
+        text id_transacao UK "idempotência"
         int terminal_id FK
         int cartao_id FK
         int total_centavos
-        text status
-        text origem
-        text criada_em
+        text status "aprovada | recusada | estornada"
+        text motivo
+        text origem "online | contingencia"
+        text resposta "JSON enviado ao terminal"
     }
     ITENS_TRANSACAO {
         int id PK
@@ -292,29 +324,84 @@ erDiagram
         int quantidade
         int preco_unitario_centavos
     }
+    ESTORNOS {
+        int id PK
+        int transacao_id FK "UNIQUE"
+        int valor_centavos
+    }
     TELEMETRIA {
         int id PK
         int terminal_id FK
         int rssi
+        int memoria_livre
         int fila_pendente
-        text registrada_em
+        text dados "JSON completo"
     }
     COMANDOS {
         int id PK
         int terminal_id FK
-        text comando
-        text status
+        text tipo
+        text parametros "JSON"
+        text status "pendente | executado"
     }
     LOGS_AUDITORIA {
         int id PK
-        int terminal_id FK
         text evento
-        text criado_em
+        int terminal_id FK
+        int conta_id FK
+        int transacao_id FK
+        int valor_anterior
+        int valor_novo
     }
 ```
 
-O preço unitário é copiado para `ITENS_TRANSACAO` no momento da venda. Assim, se o
-preço do produto mudar depois, o histórico continua mostrando quanto foi cobrado.
+Versão em imagem: [`docs/modelo_dados.png`](docs/modelo_dados.png).
+
+- **Dinheiro em centavos** (`INTEGER`), para evitar erros de arredondamento.
+- **O preço unitário é copiado** para `ITENS_TRANSACAO` no momento da venda: se o
+  preço mudar depois, o histórico continua mostrando quanto foi cobrado.
+- **Toda venda bem formada fica registrada**, inclusive as recusadas (com o
+  motivo). Isso alimenta o histórico, a auditoria e o dashboard da Entrega 4.
+
+### O banco também se protege
+
+As regras mais importantes não dependem só do código Python:
+
+| Regra | Como o banco garante |
+|---|---|
+| Saldo nunca negativo | `CHECK (saldo_centavos >= 0)` em `contas` |
+| Estoque nunca negativo | `CHECK (estoque >= 0)` em `produtos` |
+| A mesma venda não é gravada duas vezes | `id_transacao` é `UNIQUE` |
+| Uma venda só é estornada uma vez | `transacao_id` é `UNIQUE` em `estornos` |
+| Toda mudança de saldo, estoque e preço fica registrada | gatilhos (`TRIGGER`) gravam em `logs_auditoria`, mesmo para um `UPDATE` feito à mão |
+| Ninguém altera ou apaga a auditoria | gatilhos `BEFORE UPDATE/DELETE` abortam a operação |
+
+### Atualização atômica de uma venda
+
+Uma venda mexe em cinco tabelas. Tudo roda numa única transação (`backend/banco.py`
+e `backend/servicos.py`):
+
+```sql
+BEGIN IMMEDIATE;                                        -- reserva a escrita
+UPDATE produtos SET estoque = estoque - 2 WHERE id = 1 AND estoque >= 2;   -- 0 linhas? ROLLBACK
+UPDATE contas SET saldo_centavos = saldo_centavos - 1300
+       WHERE id = 1 AND saldo_centavos >= 1300;                            -- 0 linhas? ROLLBACK
+INSERT INTO transacoes (...);
+INSERT INTO itens_transacao (...);
+INSERT INTO logs_auditoria (...);                       -- + os gatilhos de saldo e estoque
+COMMIT;
+```
+
+- **Tudo ou nada:** se o estoque do segundo produto acabou, ou se o saldo não dá,
+  o `ROLLBACK` devolve o estoque já baixado do primeiro e apaga a auditoria da
+  tentativa. A recusa é registrada depois, numa transação separada.
+- **Sem corrida entre duas vendas:** o `UPDATE` só debita se ainda houver saldo
+  (`WHERE saldo_centavos >= total`), e o `BEGIN IMMEDIATE` impede que duas vendas
+  leiam o mesmo saldo ao mesmo tempo. Um teste dispara 20 compras simultâneas de
+  R$ 3,00 num cartão com R$ 5,00: só uma é aprovada.
+- **Idempotência:** o `id_transacao` de cada venda é procurado na tabela hash
+  `processadas` antes de tudo. Se o terminal reenviar a mesma venda (resposta
+  perdida, fila offline), o backend devolve a resposta original, sem cobrar de novo.
 
 ---
 
@@ -340,10 +427,20 @@ bytebank-pay/
 │   ├── diagnostico.py     teste das peças da bancada (não precisa ficar na placa)
 │   ├── arquivos.py        gravação segura de JSON na flash
 │   └── formatacao.py      textos para o OLED e valores em reais
-├── servidor_teste/        servidor de teste para a Entrega 2 (só biblioteca padrão)
+├── backend/               Camada 2 — API em FastAPI (Entrega 3)
+│   ├── __main__.py        inicia o servidor: python -m backend
+│   ├── app.py             rotas da API e validação dos pacotes
+│   ├── modelos.py         formato dos pacotes JSON (Pydantic)
+│   ├── servicos.py        regras de negócio: vendas, estornos, comandos
+│   ├── tabela_hash.py     tabela hash implementada do zero (FNV-1a, encadeamento)
+│   ├── banco.py           conexão SQLite e transações atômicas
+│   ├── requirements.txt   dependências (fastapi, uvicorn; pytest e httpx para testes)
+│   └── tests/             testes automáticos (pytest)
+├── database/              Camada 3 — SQLite
+│   ├── schema.sql         tabelas, restrições, gatilhos de auditoria e visão do caixa
+│   └── seed.sql           carga de teste (cartões da bancada, produtos, terminal)
+├── servidor_teste/        servidor de teste da Entrega 2 (substituído pelo backend)
 ├── ferramentas/           simulador do terminal e enviar_comando.py (papel do gerente)
-├── backend/               Camada 2 — API em Python (Entrega 3)
-├── database/              Camada 3 — schema.sql e carga de teste (Entrega 3)
 ├── dashboard/             Camada 4 — Streamlit (Entrega 4)
 └── docs/                  diagramas em imagem; fotos e circuito (Entrega 2)
 ```
@@ -624,6 +721,11 @@ não estiver no mesmo computador.
 
 #### Servidor de teste
 
+> A partir da Entrega 3, use o **backend** (`python -m backend`, ver
+> [Backend e banco de dados](#backend-e-banco-de-dados-entrega-3)). Ele tem as
+> mesmas rotas, então o terminal funciona com os dois sem mudar nada. O servidor
+> de teste continua no repositório como referência.
+
 A Entrega 2 pede o envio de JSON para um servidor de teste. O
 `servidor_teste/servidor.py` usa só a biblioteca padrão do Python, então não é
 preciso instalar nada:
@@ -727,6 +829,100 @@ Sem resposta, ou com erro do servidor (HTTP 5xx), a venda vai para a fila de con
 | Estoque da cópia local desatualizado | o servidor confere de novo e recusa com `Sem estoque de ...` |
 | Erro inesperado | mostra a linha do erro e reinicia a placa em 10 s (Ctrl+C cancela) |
 
+### Backend e banco de dados (Entrega 3)
+
+#### Rodar
+
+Da pasta raiz do repositório, no computador (Python 3.10 ou mais novo):
+
+```bash
+pip install -r backend/requirements.txt
+python -m backend
+```
+
+- O banco `database/bytebank.db` é criado sozinho na primeira vez, a partir do
+  `schema.sql` e do `seed.sql`. Para começar do zero: `python -m backend --recriar`.
+- O servidor mostra o `API_URL` para o `config.py` do ESP32, como o servidor de
+  teste fazia. **O computador e a placa precisam estar na mesma rede.**
+- **http://localhost:8000/docs** abre uma página em que dá para testar cada rota
+  pelo navegador, sem a placa (documentação automática do FastAPI).
+- O console mostra cada venda, recusa, estorno e comando, com o motivo.
+
+#### Rotas
+
+| Rota | Quem usa | Para quê |
+|---|---|---|
+| `GET /produtos` | terminal | catálogo com preço e estoque |
+| `POST /transacoes` | terminal | venda: valida, recalcula o total e debita de forma atômica |
+| `POST /estornos` | terminal (modo operador) | cancela uma venda aprovada |
+| `GET /terminais/{id}/resumo` | terminal (modo operador) | resumo do caixa |
+| `GET /terminais/{id}/comandos` | terminal | próximo comando da fila |
+| `POST /terminais/{id}/comandos/{n}/confirmacao` | terminal | comando executado |
+| `POST /telemetria` | terminal | estado da placa a cada 60 s |
+| `POST /terminais/{id}/comandos` | gerente | coloca um comando na fila |
+| `PATCH /produtos/{codigo}` | gerente | muda preço ou estoque |
+| `GET /transacoes` | dashboard | últimas vendas |
+| `GET /terminais` | dashboard | terminais, situação e última telemetria |
+| `GET /auditoria` | dashboard | últimos registros de auditoria |
+| `GET /diagnostico/tabelas-hash` | equipe | estatísticas das tabelas hash |
+
+#### Validação dos pacotes
+
+O FastAPI confere cada pacote contra os modelos de `backend/modelos.py` antes da
+regra de negócio. Exemplos de pacote recusado com **HTTP 400**: UID que não é
+hexadecimal, lista de itens vazia, quantidade zero ou em texto (`"2"`), produto
+com código fora de 1–9, origem diferente de `online`/`contingencia`. A resposta
+traz um motivo curto, que o terminal mostra na tela:
+
+```json
+{"status": "recusada", "motivo": "Pacote inválido: itens.0.quantidade"}
+```
+
+Recusas de **regra de negócio** voltam com **HTTP 422** e ficam gravadas no banco:
+`Cartão não cadastrado`, `Cartão bloqueado`, `Terminal bloqueado`,
+`Produto 9 inexistente`, `Sem estoque de Chocolate`, `Saldo insuficiente`.
+
+#### Dados de teste
+
+| Cartão (UID) | Saldo | Para testar |
+|---|---|---|
+| `532F07FE` (cartão branco da bancada) | R$ 1.000,00 | venda aprovada |
+| `93892B4F` (chaveiro azul da bancada) | R$ 5,00 | saldo insuficiente |
+| `DEADBEEF` | R$ 500,00 | cartão bloqueado |
+| `A1B2C3D4`, `11223344` | R$ 1.000,00 / R$ 10,00 | simulador |
+
+O Chocolate começa com estoque 2, para testar o `esgot` no terminal.
+
+#### Consultar o banco
+
+Com o servidor parado ou rodando, qualquer visualizador de SQLite abre o
+`database/bytebank.db` (por exemplo, a extensão *SQLite Viewer* do VS Code ou o
+programa *DB Browser for SQLite*). Pelo terminal:
+
+```bash
+sqlite3 database/bytebank.db "SELECT * FROM vw_resumo_caixa;"
+sqlite3 database/bytebank.db "SELECT criado_em, evento, valor_anterior, valor_novo FROM logs_auditoria ORDER BY id DESC LIMIT 10;"
+```
+
+#### Testes automáticos
+
+```bash
+python -m pytest backend/tests -v
+```
+
+São 47 testes, em três grupos:
+
+- **Tabela hash:** busca, colisões, redimensionamento e comparação com o `dict`
+  em 5.000 operações aleatórias.
+- **API:** venda aprovada, recálculo do total, todas as recusas, pacotes
+  inválidos, idempotência (inclusive depois de reiniciar o servidor),
+  atomicidade, 20 vendas simultâneas, estornos, resumo, comandos, telemetria e as
+  proteções do próprio banco.
+- **Integração:** o código **da placa** (`esp32/api.py`, `pagamentos.py`,
+  `catalogo.py`, `fila_offline.py`, `comandos.py`), sem alteração, conversando por
+  HTTP com o backend: venda online, recusa, fila offline e sincronização, reenvio,
+  estorno, resumo, telemetria e comandos do gerente.
+
 ---
 
 ## Cronograma de entregas
@@ -745,6 +941,16 @@ Sem resposta, ou com erro do servidor (HTTP 5xx), a venda vai para a fila de con
 - [x] README inicial
 - [x] Diagrama de arquitetura em blocos
 - [x] `boot.py` conectando ao Wi-Fi na bancada
+
+### Entrega 3 — checklist
+
+- [x] API em Python (FastAPI) recebendo e validando as requisições do ESP32 (mesmas rotas da Entrega 2)
+- [x] `database/schema.sql` com o modelo relacional: transações, saldos, itens, estornos, comandos, telemetria e logs de auditoria
+- [x] Buscas em tabelas hash O(1) (tabela hash própria: cartões, produtos, terminais e vendas processadas)
+- [x] Atualizações atômicas no SQLite (BEGIN IMMEDIATE / COMMIT / ROLLBACK, `UPDATE` condicional)
+- [x] Auditoria por gatilhos do banco, com registros que não podem ser alterados nem apagados
+- [x] Testes automáticos, incluindo o código da placa contra o backend
+- [ ] Testar na bancada: ESP32 com `API_URL` apontando para o backend
 
 ### Entrega 2 — checklist
 
