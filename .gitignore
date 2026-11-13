@@ -12,6 +12,7 @@ __pycache__/
 .venv/
 venv/
 .env
+.pytest_cache/
 
 # Editores e sistema (a configuração do MicroPico tem caminhos de cada máquina)
 .vscode/
@@ -19,3 +20,9 @@ venv/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Arquivos que o terminal grava na flash (e o simulador grava no computador)
+catalogo.json
+fila_offline.json*
+bloqueio.json
+ferramentas/dados_simulador/
