@@ -4,7 +4,7 @@ main.py - Aplicação do terminal ByteBank Pay (ESP32 / MicroPython)
 Roda automaticamente depois do boot.py. Monta as peças e executa o laço
 principal, que a cada volta (~20 ms):
 
-  1. lê o botão e repassa o evento (toque, segurar...) ao terminal;
+  1. lê o botão (e o teclado 4x4, se houver) e repassa o evento ao terminal;
   2. se o terminal espera um cartão, consulta o leitor RFID;
   3. trata os tempos limite das telas;
   4. de tempos em tempos: envia vendas da fila offline, busca comandos do
@@ -27,7 +27,8 @@ from carrinho import Carrinho
 from catalogo import Catalogo
 from comandos import Comandos
 from fila_offline import FilaContingencia
-from hardware import PINO_BOTAO, Botao, Display, LeitorRFID, Sinalizador
+from hardware import (PINO_BOTAO, TECLADO_COLUNAS, TECLADO_LINHAS, Botao, Display, LeitorRFID,
+                      Sinalizador, Teclado)
 from pagamentos import Pagamentos
 from terminal import Terminal
 
@@ -76,6 +77,29 @@ def montar_telemetria(fila, pagamentos, catalogo, display, rfid, terminal):
     }
 
 
+def teclado_pinos(config):
+    linhas = getattr(config, "TECLADO_LINHAS", TECLADO_LINHAS) if config is not None else TECLADO_LINHAS
+    colunas = getattr(config, "TECLADO_COLUNAS", TECLADO_COLUNAS) if config is not None else TECLADO_COLUNAS
+    return tuple(linhas) + tuple(colunas)
+
+
+def montar_teclado(config, pino_botao):
+    """Teclado 4x4, se o config.py disser TECLADO = True. O botão continua
+    funcionando junto, a não ser que use um pino do teclado (o 32 é a
+    última coluna): aí vale só o teclado, e o aviso aparece no console."""
+    if config is None or not getattr(config, "TECLADO", False):
+        return None
+    pinos = teclado_pinos(config)
+    if pino_botao in pinos:
+        print("[MAIN] O pino {} do botão também é do teclado: o botão fica desligado. "
+              "Use PINO_BOTAO = 0 (botão BOOT) para ter os dois.".format(pino_botao))
+    try:
+        return Teclado(pinos[:4], pinos[4:])
+    except Exception as erro:          # pino inválido no config.py: segue sem teclado
+        print("[MAIN] Teclado desligado: {}".format(erro))
+        return None
+
+
 def principal():
     print("[MAIN] ByteBank Pay {}".format(VERSAO))
     config = carregar_configuracao()
@@ -84,7 +108,10 @@ def principal():
     display.mostrar(["", "  BYTEBANK PAY", "", "  Iniciando..."])
     sinal = Sinalizador()
     pino_botao = getattr(config, "PINO_BOTAO", PINO_BOTAO) if config is not None else PINO_BOTAO
-    botao = Botao(pino_botao, ao_segurar=sinal.tecla)   # bipe ao completar 0,8 s: já pode soltar
+    teclado = montar_teclado(config, pino_botao)
+    botao = None
+    if teclado is None or pino_botao not in teclado_pinos(config):
+        botao = Botao(pino_botao, ao_segurar=sinal.tecla)   # bipe ao completar 0,8 s: já pode soltar
     rfid = LeitorRFID()
 
     api = None
@@ -113,7 +140,9 @@ def principal():
     print("[MAIN] Terminal pronto. Fila offline: {} pendente(s).".format(len(fila)))
 
     while True:
-        evento = botao.ler()
+        evento = botao.ler() if botao is not None else None
+        if evento is None and teclado is not None:
+            evento = teclado.ler()
         if evento is not None:
             terminal.tecla(evento)
 

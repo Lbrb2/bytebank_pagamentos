@@ -20,7 +20,7 @@ python -m backend                # da pasta raiz do repositório
 | `relatorios.py` | relatório para baixar: Excel (5 abas) e CSV |
 | `tabela_hash.py` | tabela hash implementada do zero (FNV-1a, encadeamento separado) |
 | `banco.py` | conexão com o SQLite e `transacao()`: BEGIN IMMEDIATE / COMMIT / ROLLBACK |
-| `tests/` | 115 testes, incluindo o ponta a ponta, a antifraude, a exportação, a reposição de estoque, a senha do cartão e a aba Placa (USB) (`python -m pytest backend/tests -v`) |
+| `tests/` | 120 testes, incluindo o ponta a ponta, a antifraude, a exportação, a reposição de estoque, a senha do cartão, a aba Placa (USB) e o teclado 4x4 (`python -m pytest backend/tests -v`) |
 
 Rotas, exemplos e explicações: seção **Backend e banco de dados (Entrega 3)** do
 README principal. Com o servidor no ar, **http://localhost:8000/docs** permite

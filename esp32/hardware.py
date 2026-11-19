@@ -12,8 +12,9 @@ funcionando sem aquele componente, em vez de travar.
 Componentes da bancada (confirmados em 29/10):
   * ESP32 com display OLED 0,96" (SSD1306, 128x64) soldado na placa
   * leitor RFID RC522 (placa azul HW-126), driver próprio em rc522.py
-  * um botão de pressão (12x12 mm)
-Para conferir as ligações, rode o diagnostico.py.
+  * um botão de pressão (12x12 mm), ou o botão BOOT da própria placa
+  * teclado de membrana 4x4 (opcional, em 19/11): TECLADO = True no config.py
+Para conferir as ligações, rode o diagnostico.py (e o exemplos/teste_teclado.py).
 """
 
 import time
@@ -30,6 +31,12 @@ RFID_SCK, RFID_MOSI, RFID_MISO, RFID_RST, RFID_SDA = 18, 23, 19, 26, 27
 
 PINO_BOTAO = 32          # um terminal no GPIO 32, o outro no GND (em diagonal)
                          # 0 = botão BOOT da própria placa (config.py: PINO_BOTAO = 0)
+
+# Teclado de membrana 4x4: 8 fios. Com as teclas viradas para você, os
+# pinos do conector, da esquerda para a direita, são 4 LINHAS e 4 COLUNAS.
+TECLADO_LINHAS = (13, 14, 25, 33)     # pinos 1 a 4 do conector (linhas 123A, 456B, 789C, *0#D)
+TECLADO_COLUNAS = (21, 22, 15, 32)    # pinos 5 a 8 (colunas 147*, 2580, 369#, ABCD)
+TECLAS = ("123A", "456B", "789C", "*0#D")
 
 PINO_BUZZER = 17         # opcionais: se não estiverem ligados, nada acontece
 PINO_LED_APROVADO = 2
@@ -165,6 +172,68 @@ class Botao:
                 self._longo_enviado = True
                 return SEGURAR_LONGO
         return None
+
+
+# ======================================================================
+# Teclado de membrana 4x4 (matricial)
+# ======================================================================
+
+class Teclado:
+    """Lê o teclado 4x4 por VARREDURA, sem travar o laço principal.
+
+    As 16 teclas ficam numa grade de 4 linhas x 4 colunas: cada tecla, ao
+    ser apertada, liga a sua linha à sua coluna. As colunas são entradas
+    com pull-up (ficam em 1). Para ler, o teclado coloca UMA linha por vez
+    em 0 e olha as colunas: a que cair para 0 indica a tecla. As outras
+    linhas ficam como entrada (soltas), para duas teclas apertadas juntas
+    não ligarem duas saídas entre si.
+
+    ler() devolve o que o terminal.py entende, só no momento do aperto
+    (segurar a tecla não repete):
+        0-9, * e #    -> o próprio caractere (produto, senha, PIN...)
+        A             -> TOQUE          (próximo item, como o toque no botão)
+        B             -> SEGURAR        (escolher / confirmar)
+        C             -> SEGURAR_LONGO  (cancelar; com carrinho vazio, modo operador)
+        D             -> nada (livre)
+    """
+
+    LETRAS = {"A": TOQUE, "B": SEGURAR, "C": SEGURAR_LONGO, "D": None}
+
+    def __init__(self, linhas=TECLADO_LINHAS, colunas=TECLADO_COLUNAS, debounce_ms=30):
+        self._linhas = [Pin(numero, Pin.IN) for numero in linhas]
+        self._colunas = [Pin(numero, Pin.IN, Pin.PULL_UP) for numero in colunas]
+        self._debounce = debounce_ms
+        self._lida = None
+        self._estavel = None
+        self._mudou_em = time.ticks_ms()
+        print("[TECLADO] Linhas nos GPIO {} e colunas nos GPIO {}.".format(
+            "/".join(str(n) for n in linhas), "/".join(str(n) for n in colunas)))
+
+    def _varrer(self):
+        """A tecla apertada agora ('1', 'A'...) ou None."""
+        for indice, linha in enumerate(self._linhas):
+            linha.init(Pin.OUT, value=0)
+            try:
+                for coluna_indice, coluna in enumerate(self._colunas):
+                    if coluna.value() == 0:
+                        return TECLAS[indice][coluna_indice]
+            finally:
+                linha.init(Pin.IN)               # solta a linha de novo
+        return None
+
+    def ler(self):
+        agora = time.ticks_ms()
+        tecla = self._varrer()
+        if tecla != self._lida:                  # mudou: espera firmar (debounce)
+            self._lida = tecla
+            self._mudou_em = agora
+            return None
+        if tecla == self._estavel or time.ticks_diff(agora, self._mudou_em) < self._debounce:
+            return None
+        self._estavel = tecla
+        if tecla is None:                        # soltou
+            return None
+        return self.LETRAS.get(tecla, tecla)
 
 
 # ======================================================================

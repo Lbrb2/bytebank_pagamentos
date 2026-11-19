@@ -43,7 +43,7 @@ CHIPS = {
     0x303A: "Espressif (USB nativo)",
 }
 
-CAMPOS = ("WIFI_SSID", "WIFI_SENHA", "API_URL", "TERMINAL_ID", "PINO_BOTAO", "PIN_OPERADOR")
+CAMPOS = ("WIFI_SSID", "WIFI_SENHA", "API_URL", "TERMINAL_ID", "PINO_BOTAO", "PIN_OPERADOR", "TECLADO")
 NAO_ENVIAR = {"config.py", "config_exemplo.py"}     # o config.py é gravado pelo formulário
 
 AVISO_PORTA_OCUPADA = ("A porta USB está ocupada por outro programa. Feche o Thonny (ou clique em "
@@ -137,6 +137,8 @@ def validar_config(valores):
         problemas.append("Terminal: letras, números, - ou _ (ex.: POS-01).")
     if valores.get("PINO_BOTAO") not in (0, 32):
         problemas.append("Pino do botão: 32 (botão no protoboard) ou 0 (botão BOOT).")
+    if valores.get("TECLADO") and valores.get("PINO_BOTAO") == 32:
+        problemas.append("Com o teclado 4x4, escolha o botão BOOT (0): o pino 32 é uma coluna do teclado.")
     pin = valores.get("PIN_OPERADOR")
     if pin and not (isinstance(pin, str) and pin.isdigit() and 4 <= len(pin) <= 8):
         problemas.append("PIN do operador: de 4 a 8 dígitos.")
@@ -165,6 +167,9 @@ def gerar_config(valores):
         "",
         "# Pino do botão: 32 = botão no protoboard; 0 = botão BOOT da placa",
         "PINO_BOTAO = {!r}".format(int(valores["PINO_BOTAO"])),
+        "",
+        "# Teclado de membrana 4x4 (linhas 13, 14, 25, 33; colunas 21, 22, 15, 32)",
+        "TECLADO = {!r}".format(bool(valores.get("TECLADO"))),
     ]
     if valores.get("PIN_OPERADOR"):
         linhas += ["", "# PIN do modo operador (carrinho vazio e segurar o botão 5 s)",

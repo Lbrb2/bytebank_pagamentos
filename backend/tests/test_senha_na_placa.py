@@ -117,3 +117,16 @@ def test_terceira_senha_errada_mostra_o_bloqueio(sistema):  # noqa: F811
     assert "Senha incorreta" in display.texto() and "Cartao bloqueado" in display.texto().replace("ã", "a")
     motivos = [t["motivo"] for t in sistema["painel"].transacoes()]
     assert motivos == ["Senha incorreta"] * 3                  # uma categoria só no painel
+
+
+def test_compra_inteira_pelo_teclado(sistema):  # noqa: F811
+    """Com o teclado 4x4: 6 6 # (dois Sanduíches e pagar), cartão, 1 2 3 4."""
+    terminal, display = sistema["terminal"], sistema["display"]
+    for tecla in "66#":
+        terminal.tecla(tecla)
+    assert terminal.aguardando_cartao()
+    terminal.cartao("532F07FE")
+    assert terminal.estado == tela.SENHA
+    for tecla in "1234":
+        terminal.tecla(tecla)
+    assert display.linhas[0].strip() == "APROVADA"

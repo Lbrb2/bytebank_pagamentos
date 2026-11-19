@@ -722,11 +722,13 @@ with aba_placa:
                 pin_operador = pin_col.text_input(
                     "PIN do modo operador (4 a 8 dígitos)", type="password",
                     placeholder="em branco: mantém o da placa" if atual.get("PIN_OPERADOR") else "")
+                teclado = st.checkbox("Teclado 4x4 ligado (linhas nos GPIO 13, 14, 25, 33; colunas nos "
+                                      "GPIO 21, 22, 15, 32)", value=bool(atual.get("TECLADO", False)))
                 gravar = st.form_submit_button("Gravar na placa e reiniciar", type="primary")
             if gravar:
                 valores = {"WIFI_SSID": ssid.strip(), "WIFI_SENHA": senha_wifi or atual.get("WIFI_SENHA", ""),
                            "API_URL": api_url.strip(), "TERMINAL_ID": terminal_id.strip(), "PINO_BOTAO": pino,
-                           "PIN_OPERADOR": pin_operador or atual.get("PIN_OPERADOR", "")}
+                           "PIN_OPERADOR": pin_operador or atual.get("PIN_OPERADOR", ""), "TECLADO": teclado}
                 problemas = placa_usb.validar_config(valores)
                 if problemas:
                     st.error("✕ Não gravado.  \n" + "  \n".join(problemas))

@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(RAIZ, "dashboard"))
 import placa_usb  # noqa: E402
 
 VALORES = {"WIFI_SSID": "Rede do Lab", "WIFI_SENHA": 'senha "difícil"', "API_URL": "http://192.168.0.15:8000",
-           "TERMINAL_ID": "POS-01", "PINO_BOTAO": 32, "PIN_OPERADOR": "2580"}
+           "TERMINAL_ID": "POS-01", "PINO_BOTAO": 32, "PIN_OPERADOR": "2580", "TECLADO": False}
 
 
 class Executor:

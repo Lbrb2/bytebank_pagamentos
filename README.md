@@ -231,10 +231,21 @@ Componentes confirmados na bancada em 29/10:
 | | 3.3V | 3V3 — **nunca em 5 V** |
 | Botão | um terminal | 32 (*pull-up* interno: não precisa de resistor) |
 | | terminal em diagonal | GND |
-| Botão BOOT da placa (alternativa) | — | 0 — sem fio nenhum; basta `PINO_BOTAO = 0` no `config.py` |
+| Botão BOOT da placa (alternativa) | — | 0 — sem fio nenhum; basta `PINO_BOTAO = 0` no `config.py` (ou "0 · botão BOOT" na aba Placa (USB)) |
+| Teclado 4x4 (opcional) | pinos 1, 2, 3, 4 do conector (linhas `123A`, `456B`, `789C`, `*0#D`) | 13, 14, 25, 33 |
+| | pinos 5, 6, 7, 8 (colunas `147*`, `2580`, `369#`, `ABCD`) | 21, 22, 15, 32 — com o teclado, o botão passa a ser o BOOT (0) |
 | Buzzer (opcional) | + | 17 |
 | LED de status do Wi-Fi | — | 16 (usado pelo `boot.py`) |
 | LED de aprovação (opcional) | ânodo (via 220 Ω) | 2 |
+
+**Teclado 4x4:** com as teclas viradas para você, os 8 pinos do conector são
+contados **da esquerda para a direita**. Ligue com `TECLADO = True` no `config.py`
+(ou a caixa "Teclado 4x4 ligado" na aba Placa (USB)) e confira os fios com o
+`esp32/exemplos/teste_teclado.py`, que mostra no console cada tecla apertada. As
+teclas fazem o mesmo que no simulador: **1 a 9** incluem o produto, **0** passa a
+página, **\*** desfaz, **#** paga; na senha e no PIN, os dígitos entram direto. As
+letras substituem o botão: **A** = toque (próximo), **B** = segurar (escolher),
+**C** = segurar 5 s (cancelar / modo operador).
 
 Cuidados na montagem:
 
@@ -951,7 +962,7 @@ sqlite3 database/bytebank.db "SELECT criado_em, evento, valor_anterior, valor_no
 python -m pytest backend/tests -v
 ```
 
-São 115 testes (contando os da Entrega 4, da antifraude, da exportação, da reposição de estoque, da senha do cartão e da aba Placa (USB)), em quatro grupos:
+São 120 testes (contando os da Entrega 4, da antifraude, da exportação, da reposição de estoque, da senha do cartão, da aba Placa (USB) e do teclado 4x4), em quatro grupos:
 
 - **Tabela hash:** busca, colisões, redimensionamento e comparação com o `dict`
   em 5.000 operações aleatórias.

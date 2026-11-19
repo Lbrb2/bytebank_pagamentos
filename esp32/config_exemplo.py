@@ -19,6 +19,11 @@ TERMINAL_ID = "POS-01"
 # placa (serve para testar sem ligar fio nenhum)
 PINO_BOTAO = 32
 
+# Teclado de membrana 4x4 (opcional). Ligações no README ("Mapa de pinos"):
+# linhas nos GPIO 13, 14, 25, 33 e colunas nos GPIO 21, 22, 15, 32.
+# Com o teclado, use o botão BOOT (PINO_BOTAO = 0): o 32 vira coluna.
+TECLADO = False
+
 # PIN do modo operador (de 4 a 8 dígitos). TROQUE antes de usar.
 # Para abrir o modo: carrinho vazio e segurar o botão por 5 segundos.
 # Apague a linha para desligar o modo operador.
