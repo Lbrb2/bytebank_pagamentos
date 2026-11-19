@@ -20,12 +20,12 @@ INSERT INTO contas (id, cliente_id, saldo_centavos) VALUES
     (4, 4,   1000),
     (5, 5,  50000);
 
-INSERT INTO cartoes (conta_id, uid_rfid, apelido, status) VALUES
-    (1, '532F07FE', 'Cartão branco (bancada)',  'ativo'),
-    (2, '93892B4F', 'Chaveiro azul (bancada)',  'ativo'),
-    (3, 'A1B2C3D4', 'Cartão de teste (simulador)', 'ativo'),
-    (4, '11223344', 'Cartão de teste (simulador)', 'ativo'),
-    (5, 'DEADBEEF', 'Cartão bloqueado (teste)',  'bloqueado');
+INSERT INTO cartoes (conta_id, uid_rfid, apelido, status, motivo_bloqueio) VALUES
+    (1, '532F07FE', 'Cartão branco (bancada)',     'ativo',     NULL),
+    (2, '93892B4F', 'Chaveiro azul (bancada)',     'ativo',     NULL),
+    (3, 'A1B2C3D4', 'Cartão de teste (simulador)', 'ativo',     NULL),
+    (4, '11223344', 'Cartão de teste (simulador)', 'ativo',     NULL),
+    (5, 'DEADBEEF', 'Cartão bloqueado (teste)',    'bloqueado', 'Bloqueado pelo banco (teste)');
 
 INSERT INTO produtos (codigo, nome, preco_centavos, estoque) VALUES
     ('1', 'Café',          500, 50),

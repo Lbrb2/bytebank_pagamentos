@@ -81,12 +81,24 @@ class Confirmacao(BaseModel):
 
 
 class AlteracaoProduto(BaseModel):
-    """PATCH /produtos/{codigo} - gerente muda preço e/ou estoque."""
+    """PATCH /produtos/{codigo} - gerente muda o preço e/ou CORRIGE a contagem do estoque.
+
+    Para mercadoria que chegou, use POST /produtos/{codigo}/reposicao (soma).
+    estoque_esperado: o estoque que o gerente viu na tela. Se uma venda mudou
+    o valor nesse meio-tempo, a correção é recusada (409) em vez de apagar a
+    venda da conta (atualização perdida).
+    """
     preco_centavos: Optional[StrictInt] = Field(default=None, ge=1)
     estoque: Optional[StrictInt] = Field(default=None, ge=0)
+    estoque_esperado: Optional[StrictInt] = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def pelo_menos_um_campo(self):
         if self.preco_centavos is None and self.estoque is None:
             raise ValueError("informe preco_centavos e/ou estoque")
         return self
+
+
+class Reposicao(BaseModel):
+    """POST /produtos/{codigo}/reposicao - chegou mercadoria: SOMA ao estoque atual."""
+    unidades: StrictInt = Field(ge=1, le=10000)

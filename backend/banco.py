@@ -44,7 +44,18 @@ def conectar(caminho=CAMINHO_PADRAO):
     conexao.execute("PRAGMA busy_timeout = 5000")
     if novo:
         criar_tabelas(conexao)
+    else:
+        migrar(conexao)
     return conexao
+
+
+def migrar(conexao):
+    """Atualiza um banco criado por uma versão anterior do schema.sql, sem
+    perder os dados. (Entrega 4: colunas do bloqueio por suspeita de fraude.)"""
+    colunas = {linha["name"] for linha in conexao.execute("PRAGMA table_info(cartoes)")}
+    for coluna in ("motivo_bloqueio", "bloqueado_em"):
+        if coluna not in colunas:
+            conexao.execute("ALTER TABLE cartoes ADD COLUMN {} TEXT".format(coluna))
 
 
 def criar_tabelas(conexao, com_dados_de_teste=True):

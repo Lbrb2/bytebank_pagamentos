@@ -141,6 +141,9 @@ isso, um terminal adulterado poderia vender qualquer produto por qualquer valor.
 | Backend | **Tabela hash** | `id_transacao` → resposta já enviada: impede cobrança em dobro | busca O(1) |
 | Backend | **Tabela hash** | Código do terminal (`POS-01`) → id no banco | busca O(1) |
 | Banco | **Fila FIFO** por terminal (tabela `comandos`, em ordem de `id`) | Comandos do gerente, executados na ordem em que foram enviados | frente da fila pelo índice |
+| Backend | **Tabela hash** + **heap** (`heapq.nlargest`) | Produtos mais vendidos no dashboard: soma por produto na hash, os *k* maiores saem de um heap de tamanho *k* | O(n log k), sem ordenar tudo |
+| Backend | **Fila de janela deslizante** (`deque`) por cartão, numa **tabela hash** | Antifraude: tentativas do cartão nos últimos 60 s | cada tentativa entra e sai uma vez: O(1) |
+| Backend | **Fila de tamanho fixo** (`deque(maxlen=10)`) + soma acumulada | Antifraude: média das últimas 10 compras do cliente | média em O(1) |
 
 ### Tabela hash do backend
 
@@ -432,6 +435,8 @@ bytebank-pay/
 │   ├── app.py             rotas da API e validação dos pacotes
 │   ├── modelos.py         formato dos pacotes JSON (Pydantic)
 │   ├── servicos.py        regras de negócio: vendas, estornos, comandos
+│   ├── antifraude.py      detecção de fraude em tempo real (extra)
+│   ├── relatorios.py      relatório para baixar, em Excel e CSV
 │   ├── tabela_hash.py     tabela hash implementada do zero (FNV-1a, encadeamento)
 │   ├── banco.py           conexão SQLite e transações atômicas
 │   ├── requirements.txt   dependências (fastapi, uvicorn; pytest e httpx para testes)
@@ -441,7 +446,12 @@ bytebank-pay/
 │   └── seed.sql           carga de teste (cartões da bancada, produtos, terminal)
 ├── servidor_teste/        servidor de teste da Entrega 2 (substituído pelo backend)
 ├── ferramentas/           simulador do terminal e enviar_comando.py (papel do gerente)
-├── dashboard/             Camada 4 — Streamlit (Entrega 4)
+├── dashboard/             Camada 4 — painel em Streamlit (Entrega 4)
+│   ├── app.py             telas: indicadores, terminais, gráficos, controle remoto
+│   ├── graficos.py        gráficos (Altair) e as regras de visualização
+│   ├── dados.py           conversa com a API e calcula os indicadores
+│   └── requirements.txt   dependências (streamlit, altair, pandas)
+├── .streamlit/config.toml cor de destaque do painel (azul da paleta)
 └── docs/                  diagramas em imagem; fotos e circuito (Entrega 2)
 ```
 
@@ -860,8 +870,15 @@ python -m backend
 | `POST /terminais/{id}/comandos/{n}/confirmacao` | terminal | comando executado |
 | `POST /telemetria` | terminal | estado da placa a cada 60 s |
 | `POST /terminais/{id}/comandos` | gerente | coloca um comando na fila |
-| `PATCH /produtos/{codigo}` | gerente | muda preço ou estoque |
-| `GET /transacoes` | dashboard | últimas vendas |
+| `PATCH /produtos/{codigo}` | gerente | muda o preço ou corrige a contagem do estoque (com `estoque_esperado`, responde 409 se houve venda no meio) |
+| `POST /produtos/{codigo}/reposicao` | gerente | chegou mercadoria: **soma** as unidades ao estoque atual |
+| `GET /transacoes` | dashboard | últimas vendas (filtros `desde`, `ate` e `terminal`) |
+| `GET /relatorios/mais-vendidos` | dashboard | top *k* produtos (tabela hash + heap) |
+| `GET /comandos` | dashboard | últimos comandos e se o terminal já executou |
+| `GET /telemetria` | dashboard | histórico de sinal, memória e fila de cada terminal |
+| `GET /cartoes/bloqueados` | dashboard | cartões bloqueados e o motivo (alertas de fraude) |
+| `GET /relatorios/exportar?formato=xlsx\|csv` | dashboard | relatório do período para baixar (filtros `desde` e `terminal`) |
+| `POST /cartoes/{uid}/desbloquear` | dashboard | o gerente libera um cartão |
 | `GET /terminais` | dashboard | terminais, situação e última telemetria |
 | `GET /auditoria` | dashboard | últimos registros de auditoria |
 | `GET /diagnostico/tabelas-hash` | equipe | estatísticas das tabelas hash |
@@ -910,18 +927,262 @@ sqlite3 database/bytebank.db "SELECT criado_em, evento, valor_anterior, valor_no
 python -m pytest backend/tests -v
 ```
 
-São 47 testes, em três grupos:
+São 85 testes (contando os da Entrega 4, da antifraude, da exportação e da reposição de estoque), em quatro grupos:
 
 - **Tabela hash:** busca, colisões, redimensionamento e comparação com o `dict`
   em 5.000 operações aleatórias.
 - **API:** venda aprovada, recálculo do total, todas as recusas, pacotes
   inválidos, idempotência (inclusive depois de reiniciar o servidor),
-  atomicidade, 20 vendas simultâneas, estornos, resumo, comandos, telemetria e as
-  proteções do próprio banco.
+  atomicidade, 20 vendas simultâneas, estornos, resumo, comandos, telemetria,
+  reposição de estoque sem atualização perdida e as proteções do próprio banco.
 - **Integração:** o código **da placa** (`esp32/api.py`, `pagamentos.py`,
   `catalogo.py`, `fila_offline.py`, `comandos.py`), sem alteração, conversando por
   HTTP com o backend: venda online, recusa, fila offline e sincronização, reenvio,
   estorno, resumo, telemetria e comandos do gerente.
+- **Ponta a ponta (Entrega 4):** terminal, backend e painel juntos (ver abaixo).
+
+### Dashboard (Entrega 4)
+
+![Painel do gerente, aba Vendas, tema claro](docs/dashboard_claro.png)
+
+*Capturas com dados de demonstração (uma semana de vendas e telemetria geradas
+para o teste visual). Tema escuro: [`docs/dashboard_escuro.png`](docs/dashboard_escuro.png).
+Outras abas: Estoque ([claro](docs/dashboard_estoque_claro.png),
+[escuro](docs/dashboard_estoque_escuro.png)), Terminais
+([claro](docs/dashboard_terminais_claro.png), [escuro](docs/dashboard_terminais_escuro.png))
+e Controle remoto ([claro](docs/dashboard_controle_claro.png),
+[escuro](docs/dashboard_controle_escuro.png)).*
+
+#### Rodar
+
+Com o backend no ar (`python -m backend`), em outro terminal, da pasta raiz:
+
+```bash
+pip install -r dashboard/requirements.txt
+streamlit run dashboard/app.py
+```
+
+O navegador abre em http://localhost:8501. O painel se atualiza sozinho a cada
+5 segundos (dá para pausar na barra lateral) e conversa **só com a API**, nunca
+direto com o banco: as regras ficam num lugar só, e o painel funciona em outro
+computador da rede (mude o endereço do backend na barra lateral).
+
+> Rode o `streamlit run` **da pasta raiz**: é lá que fica o `.streamlit/config.toml`
+> com a cor de destaque do painel.
+
+#### O que o painel mostra
+
+No topo, sempre visíveis:
+
+| Parte | Conteúdo |
+|---|---|
+| Filtros | período (hoje, últimas 24 h, 7 dias, tudo) e terminal; valem para tudo abaixo deles |
+| Exportar relatório | baixa o relatório do período e terminal escolhidos, em Excel ou CSV (ver abaixo) |
+| Alerta de segurança | aparece quando a antifraude bloqueia um cartão, com o motivo e um botão **Desbloquear** |
+| Números principais | faturamento em destaque; vendas aprovadas (quantas pela fila offline), ticket médio, recusadas (% das tentativas) e estornos, cada um com a **variação em relação ao período anterior** |
+
+Embaixo, em abas:
+
+| Aba | Conteúdo |
+|---|---|
+| **Vendas** | faturamento por hora (ou por dia); mais vendidos (top 5, tabela hash + heap no backend); **horário de pico** (dia da semana × hora); últimas transações; recusas por motivo |
+| **Estoque** | **estoque com previsão**: quanto tempo cada produto dura no ritmo da última hora, do mais urgente ao menos; formulário com três ações (**chegou mercadoria**, que soma; **corrigir contagem**, que confere se houve venda no meio; e **mudar preço**), que avisa os terminais |
+| **Terminais** | situação agora (online, sem contato, bloqueado); **saúde ao longo do tempo** (sinal do Wi-Fi e memória livre de cada placa, com aviso de possível vazamento de memória); **fila offline** (quanto as vendas sem conexão esperaram até chegar) |
+| **Controle remoto** | mensagem, bloquear, desbloquear e atualizar catálogo, com a situação de cada comando (… aguardando, ✓ executado com o que a placa respondeu, ou ✕ erro); auditoria |
+
+Como cada parte nova funciona:
+
+- **Variação em relação ao período anterior:**
+  - "Hoje" compara com **ontem até a mesma hora**: às 10h, comparar com o dia
+    inteiro de ontem faria hoje parecer sempre pior;
+  - "Últimas 24 h" compara com as 24 h anteriores, e "Últimos 7 dias" com os 7
+    dias anteriores;
+  - seta e sinal mostram a direção (`▲ 12%`, `▼ 2`), e a cor diz se é bom:
+    faturamento subir é verde, recusas subirem é vermelho;
+  - aumentos de 10 vezes ou mais aparecem como `▲ 24x`, mais fácil de ler que `▲ 2300%`.
+- **Estoque com previsão:**
+  - ritmo = unidades vendidas na última hora, somando todos os terminais;
+  - **Repor já:** esgotado ou acaba em menos de 1 h;
+  - **Atenção:** acaba em menos de 3 h ou tem 5 unidades ou menos;
+  - a barra mostra a autonomia, até 8 h.
+- **Saúde dos terminais:**
+  - a telemetria (1 pacote por minuto) é agrupada em médias de 5 min (hoje, 24 h)
+    ou de 1 h (7 dias, tudo);
+  - se a memória livre agora estiver 10% ou mais abaixo do começo do período, o
+    painel avisa: pode ser vazamento de memória no código da placa;
+  - sinal fraco explica vendas indo para a fila offline.
+- **Horário de pico:** vendas aprovadas por dia da semana e hora, nos períodos
+  "7 dias" e "Tudo". Num dia só, o gráfico por hora já mostra o pico.
+- **Fila offline:** espera típica (mediana) e maior espera entre a venda no
+  terminal e a chegada ao servidor. Vendas feitas com o relógio da placa ainda sem
+  acertar (antes do NTP) ficam fora da conta, porque o horário delas não é confiável.
+
+#### Decisões de visualização
+
+- **Forma pelo tipo de dado:**
+  - o faturamento do período é **um número**, por isso aparece em destaque, sem gráfico;
+  - a evolução no tempo vira **colunas por hora**;
+  - comparar produtos ou motivos vira **barras horizontais ordenadas**, do maior para o menor;
+  - não há gráfico de pizza nem de rosca, porque comparar fatias parecidas é difícil.
+- **Uma cor por gráfico:** cada gráfico tem uma única série, no mesmo azul, e o
+  título diz o que está plotado, sem legenda. O azul foi conferido com o validador
+  de paleta (contraste e daltonismo) nos temas claro e escuro.
+- **Situação nunca só pela cor:** verde, amarelo e vermelho ficam reservados para
+  situação (online, sem contato, bloqueado) e vêm sempre com ícone e texto
+  (`✓ Online`, `! Sem contato há 5 min`, `✕ Bloqueado`). Por isso a cor de
+  destaque dos botões é azul, e não o vermelho padrão do Streamlit.
+- **Pouca tinta:**
+  - barras finas, de até 24 px, com ponta arredondada e base reta;
+  - grade em linha fina e contínua;
+  - texto sempre em tons de cinza do tema, nunca na cor da série.
+- **Rótulos seletivos:**
+  - no gráfico de tempo, só o maior valor tem rótulo;
+  - nos rankings curtos, o valor fica na ponta de cada barra, e o eixo sai;
+  - o resto aparece ao passar o mouse.
+- **Um eixo só:** faturamento e quantidade de vendas têm escalas diferentes, por
+  isso a quantidade aparece na dica e na tabela, e não num segundo eixo.
+- **Dica ao passar o mouse:** a área sensível é a coluna inteira, não só a barra
+  fina.
+- **Tabela equivalente:** cada gráfico tem um "Ver tabela" com os mesmos números,
+  para quem não usa mouse ou leitor de gráfico.
+- **Horário de pico em escala de uma cor:**
+  - o mapa de calor usa tons de um azul só, do claro ao escuro (no tema escuro, ao
+    contrário: o pouco se aproxima do fundo e o muito acende), com legenda da escala;
+  - a escala começa num azul médio, e não no mais claro, para "1 venda" não sumir
+    no fundo. Essa rampa também passou no validador nos dois temas;
+  - célula sem venda fica num cinza neutro.
+- **Saúde: um gráfico por medida.** Sinal (dBm) e memória (KB) têm escalas
+  diferentes, por isso ficam lado a lado, cada um com seu eixo, e não num gráfico
+  de dois eixos.
+  - linha fina, com o valor atual escrito no fim;
+  - ao passar o mouse, uma linha vertical acha o horário mais próximo;
+  - a escala tem uma amplitude mínima (20 dBm, 20 KB), para um ruído de 0,3 KB
+    não parecer um problema.
+- **Estoque como lista com barra:**
+  - uma linha por produto, com nome, número e barra alinhados;
+  - a cor da barra segue a situação (azul ok, amarelo atenção, vermelho repor),
+    sempre com ícone e texto junto;
+  - sem vendas na última hora não há previsão, e a barra fica vazia em vez de
+    "cheia", que daria a ideia errada de estoque garantido.
+- **Tema claro e escuro:** o painel segue o tema do computador, e os gráficos usam
+  os tons de cada tema.
+
+### Exportar relatório
+
+O botão **Exportar relatório**, ao lado dos filtros, baixa o relatório do período
+e do terminal escolhidos. O arquivo é gerado pelo backend
+(`GET /relatorios/exportar`), só na hora do clique.
+
+| Formato | Conteúdo |
+|---|---|
+| **Excel (.xlsx)** | cinco abas: **Resumo** (faturamento, vendas, ticket médio, fila offline, recusas, taxa de recusa, estornos), **Transações**, **Mais vendidos**, **Recusas por motivo** e **Alertas de fraude** |
+| **CSV** | as transações do período, uma por linha |
+
+- **No Excel**, valores e datas são números e datas de verdade, com formato de
+  exibição (`R$ 13,00`, `12/11/2026 14:03:10`). Dá para somar, filtrar e fazer
+  gráfico sem converter. O cabeçalho fica fixo e cada aba tem filtro.
+- **O CSV** segue o padrão do Excel em português: separador `;`, vírgula decimal e
+  UTF-8 com BOM, para os acentos aparecerem certos ao abrir com duplo clique.
+  Também abre no Google Planilhas.
+- Os horários saem no fuso de Recife (UTC−3), como no painel.
+
+### Detecção de fraude em tempo real (extra)
+
+Cada compra online passa por duas regras antes de debitar o saldo
+(`backend/antifraude.py`):
+
+| Regra | Dispara quando | Estrutura de dados |
+|---|---|---|
+| Muitas compras em pouco tempo (cartão clonado sendo testado) | a **4ª tentativa em 60 s** com o mesmo cartão | fila de janela deslizante por cartão: o que passou de 60 s sai pela frente, a tentativa nova entra pelo fim |
+| Valor fora do padrão do cliente | valor ≥ R$ 30,00 e **mais de 5x a média** das últimas 10 compras (depois de 3 compras) | fila de tamanho fixo com a soma acumulada: a média sai em O(1) |
+
+Se uma regra dispara, **o cartão é bloqueado na hora** e a compra é recusada:
+
+- o terminal mostra **"RECUSADA · Cartão bloqueado por segurança"**;
+- o bloqueio e o motivo ficam gravados no banco (`cartoes.motivo_bloqueio`), e a
+  auditoria registra o evento `fraude_suspeita`;
+- o painel mostra o **alerta de segurança**, e o gerente libera o cartão com
+  **Desbloquear** depois de falar com o cliente (evento `cartao_desbloqueado`).
+
+As filas de cada cartão ficam numa tabela hash: o cartão é achado em O(1) e cada regra
+custa O(1) por compra. Vendas que chegam pela **fila offline** não passam pelas
+regras: elas chegam em sequência quando a rede volta (pareceriam "muitas
+compras"), já aconteceram no balcão e já são limitadas a R$ 50,00 pelo terminal.
+A média é refeita a partir do banco quando o servidor reinicia.
+
+**Na apresentação:** pague 4 vezes seguidas com o cartão branco (um produto
+barato, segurar no PAGAR, aproximar o cartão). Na quarta, o terminal mostra
+"Cartão bloqueado por segurança" e o alerta aparece no painel em até 5 s.
+Desbloqueie pelo painel e pague de novo.
+
+> Os limites (60 s, 3 compras, 5x a média, R$ 30) ficam no topo de
+> `backend/antifraude.py` e podem ser ajustados.
+
+### Reposição de estoque sem atualização perdida
+
+O problema clássico de banco de dados (*lost update*): o gerente abre o painel e
+vê **50 Cafés**. Enquanto ele digita, o caixa vende 1 (sobram 49). Se o
+formulário gravar o total "70" (pensando em 50 + 20), a venda some da conta: o
+certo era **69**. Isso acontece porque ler, calcular e gravar são três passos
+separados, e a venda entra entre eles.
+
+![Formulário de reposição na aba Estoque](docs/dashboard_reposicao.png)
+
+O formulário da aba Estoque tem duas defesas, uma para cada situação:
+
+| Ação no painel | Rota | Como evita o problema |
+|---|---|---|
+| **Chegou mercadoria** (+20) | `POST /produtos/{codigo}/reposicao` | a conta é feita **pelo próprio banco**, num passo só: `UPDATE produtos SET estoque = estoque + 20`. Não importa quantas vendas entraram antes, todas continuam descontadas |
+| **Corrigir contagem** (o total certo, depois de contar a prateleira) | `PATCH /produtos/{codigo}` com `estoque_esperado` | **compare-and-set**: o painel manda o valor que o gerente viu, e o UPDATE só grava `WHERE estoque = <valor visto>`. Se houve venda no meio, nenhuma linha muda, a transação é desfeita (ROLLBACK, inclusive um preço enviado junto) e a resposta é **409** com o valor atual. O painel avisa e o gerente confere antes de salvar de novo |
+
+As duas passam pelo bloco atômico (`BEGIN IMMEDIATE` … `COMMIT`) e pela
+auditoria (`estoque_alterado`, com o valor de antes e o de depois). Os testes
+(`backend/tests/test_estoque.py`) repetem a cena acima e também rodam **10
+reposições e 10 vendas ao mesmo tempo**: o estoque final sempre fecha a conta.
+
+### Teste ponta a ponta
+
+**Automático** (`backend/tests/test_ponta_a_ponta.py`): o código real do terminal
+(pasta `esp32/`, com o display e o botão simulados), o backend rodando com
+uvicorn e o painel, conversando por HTTP:
+
+1. o cliente compra um Café com o botão (toque desce, segurar escolhe) e o cartão
+   branco, e o terminal mostra APROVADA;
+2. o painel vê a venda: faturamento, mais vendidos, cliente;
+3. uma recusa por saldo aparece no painel com o motivo;
+4. o gerente manda uma mensagem, e o terminal mostra o aviso na próxima consulta;
+5. o gerente bloqueia: o backend recusa vendas na hora e o terminal trava; depois
+   desbloqueia;
+6. o gerente muda o preço do Café, avisa o terminal, e a próxima venda já sai
+   com o preço novo;
+7. a telemetria da placa aparece no painel como "Online";
+8. o app Streamlit roda inteiro, sem navegador, e mostra os números certos;
+9. (extra) quatro compras seguidas com o mesmo cartão: a quarta é recusada por
+   segurança, o painel mostra o alerta e o gerente desbloqueia;
+10. (extra) pelo formulário do painel, o gerente repõe 20 Cafés; depois, abre a
+    correção de contagem, o caixa vende 1 nesse meio-tempo, e o painel barra a
+    gravação em vez de apagar a venda; no segundo clique, salva.
+
+```bash
+python -m pytest backend/tests/test_ponta_a_ponta.py -v
+```
+
+**Na bancada** (roteiro para gravar o vídeo da apresentação):
+
+1. Computador: `python -m backend` e `streamlit run dashboard/app.py`. Na placa, o
+   `API_URL` do `config.py` com o endereço que o backend mostra.
+2. Ligar a placa: no painel, o terminal fica **✓ Online** em até 1 minuto (telemetria).
+3. Comprar com o botão e o cartão branco: o painel mostra a venda em até 5 s.
+4. Pagar com o chaveiro azul (R$ 5,00) algo mais caro: **RECUSADA**, e o motivo
+   aparece em "Recusas por motivo".
+5. No painel, **Mostrar mensagem**: o aviso aparece no display em até 10 s.
+6. **Bloquear** pelo painel: o display mostra BLOQUEADO; **Desbloquear** volta ao
+   catálogo.
+7. Mudar o preço de um produto no painel: o display mostra o preço novo.
+8. Desligar o Wi-Fi do roteador (ou o backend), vender, religar: a venda entra
+   como **Fila offline** no painel.
+9. Pagar 4 vezes seguidas com o mesmo cartão: a quarta é recusada por segurança e o
+   alerta aparece no painel; desbloquear pelo painel.
 
 ---
 
@@ -941,6 +1202,19 @@ São 47 testes, em três grupos:
 - [x] README inicial
 - [x] Diagrama de arquitetura em blocos
 - [x] `boot.py` conectando ao Wi-Fi na bancada
+
+### Entrega 4 — checklist
+
+- [x] Dashboard em Streamlit com vendas, terminais e telemetria em tempo real (atualiza a cada 5 s)
+- [x] Comandos do dashboard para o ESP32: mensagem, bloquear, desbloquear, atualizar catálogo, preço e estoque
+- [x] Boas práticas de visualização: forma pelo tipo de dado, uma cor por gráfico (validada para daltonismo), situação com ícone e texto, tabela equivalente, tema claro e escuro
+- [x] Mais vendidos com tabela hash + heap (top k em O(n log k))
+- [x] Teste ponta a ponta automático (terminal + backend + painel)
+- [x] Exportar relatório do período em Excel (5 abas) e CSV
+- [x] Extras no painel: variação em relação ao período anterior, estoque com previsão, saúde dos terminais (sinal e memória), horário de pico e tempo da fila offline
+- [x] Extra: detecção de fraude em tempo real (janela deslizante e média móvel), com bloqueio preventivo e alerta no painel
+- [x] Extra: reposição de estoque sem atualização perdida (soma atômica no banco e compare-and-set na correção de contagem)
+- [ ] Teste ponta a ponta na bancada (roteiro acima) e vídeo para a apresentação
 
 ### Entrega 3 — checklist
 

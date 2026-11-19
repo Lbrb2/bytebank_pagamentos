@@ -44,8 +44,10 @@ CREATE TABLE cartoes (
     id          INTEGER PRIMARY KEY,
     conta_id    INTEGER NOT NULL REFERENCES contas (id),
     uid_rfid    TEXT    NOT NULL UNIQUE CHECK (uid_rfid = upper(uid_rfid) AND length(uid_rfid) >= 8),
-    apelido     TEXT,
-    status      TEXT    NOT NULL DEFAULT 'ativo' CHECK (status IN ('ativo', 'bloqueado'))
+    apelido          TEXT,
+    status           TEXT    NOT NULL DEFAULT 'ativo' CHECK (status IN ('ativo', 'bloqueado')),
+    motivo_bloqueio  TEXT,                    -- ex.: "Suspeita de fraude: 4 compras em menos de 60 s"
+    bloqueado_em     TEXT
 );
 
 -- ---------------------------------------------------------------------

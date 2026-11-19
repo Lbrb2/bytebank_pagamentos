@@ -42,7 +42,7 @@ def main():
 
     app = criar_app(args.banco)
     print("=" * 62)
-    print(" ByteBank Pay - API (Entrega 3)")
+    print(" ByteBank Pay - API")
     print("=" * 62)
     print(" No config.py do ESP32, use:")
     print('     API_URL = "http://{}:{}"'.format(ip_local(), args.porta))

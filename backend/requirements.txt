@@ -1,5 +1,6 @@
 fastapi>=0.110
 uvicorn>=0.29
+openpyxl>=3.1            # relatório em Excel
 
 # Só para rodar os testes (python -m pytest backend/tests)
 pytest>=8

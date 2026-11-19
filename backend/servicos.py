@@ -26,11 +26,13 @@ várias requisições ao mesmo tempo, e duas vendas do mesmo cartão não podem
 se misturar.
 """
 
+import heapq
 import json
 import logging
 import threading
 from datetime import datetime, timezone
 
+from .antifraude import Antifraude
 from .banco import transacao
 from .tabela_hash import TabelaHash
 
@@ -56,14 +58,16 @@ class Recusa(Exception):
 
 
 class Servico:
-    def __init__(self, conexao):
+    def __init__(self, conexao, antifraude=None):
         self._con = conexao
         self._trava = threading.Lock()
+        self.antifraude = antifraude or Antifraude()
         self.cartoes = TabelaHash()
         self.produtos = TabelaHash()
         self.terminais = TabelaHash()
         self.processadas = TabelaHash()
         self._carregar_tabelas_hash()
+        self.antifraude.carregar_historico(conexao)
 
     # ==================================================================
     # Tabelas hash
@@ -71,7 +75,7 @@ class Servico:
 
     def _carregar_tabelas_hash(self):
         for linha in self._con.execute(
-                "SELECT c.id, c.uid_rfid, c.conta_id, c.status, cl.nome AS titular "
+                "SELECT c.id, c.uid_rfid, c.conta_id, c.status, c.motivo_bloqueio, cl.nome AS titular "
                 "FROM cartoes c JOIN contas ct ON ct.id = c.conta_id "
                 "JOIN clientes cl ON cl.id = ct.cliente_id"):
             self.cartoes.inserir(linha["uid_rfid"], dict(linha))
@@ -125,7 +129,14 @@ class Servico:
                 "SELECT codigo, nome, preco_centavos, estoque FROM produtos ORDER BY codigo").fetchall()
         return [dict(linha) for linha in linhas]
 
-    def alterar_produto(self, codigo, preco_centavos=None, estoque=None):
+    def alterar_produto(self, codigo, preco_centavos=None, estoque=None, estoque_esperado=None):
+        """Muda o preço e/ou corrige a contagem do estoque (valor absoluto).
+
+        Com estoque_esperado, a correção é um "compare-and-set": o UPDATE só
+        acontece se o estoque ainda for o que o gerente viu. Se uma venda
+        mudou o valor nesse meio-tempo, nada é gravado (nem o preço) e a
+        resposta é 409, em vez de a venda sumir da conta.
+        """
         with self._trava:
             produto = self.produtos.buscar(codigo)
             if produto is None:
@@ -134,8 +145,16 @@ class Servico:
                 if preco_centavos is not None:
                     con.execute("UPDATE produtos SET preco_centavos = ? WHERE id = ?",
                                 (preco_centavos, produto["id"]))
-                if estoque is not None:
+                if estoque is not None and estoque_esperado is None:
                     con.execute("UPDATE produtos SET estoque = ? WHERE id = ?", (estoque, produto["id"]))
+                elif estoque is not None:
+                    alteradas = con.execute("UPDATE produtos SET estoque = ? WHERE id = ? AND estoque = ?",
+                                            (estoque, produto["id"], estoque_esperado)).rowcount
+                    if alteradas == 0:          # levanta dentro do bloco: ROLLBACK de tudo
+                        atual = con.execute("SELECT estoque FROM produtos WHERE id = ?",
+                                            (produto["id"],)).fetchone()[0]
+                        raise Recusa("O estoque mudou de {} para {} enquanto você editava (houve venda). "
+                                     "Confira e salve de novo.".format(estoque_esperado, atual), 409)
                 linha = dict(con.execute("SELECT id, codigo, nome, preco_centavos, estoque "
                                          "FROM produtos WHERE id = ?", (produto["id"],)).fetchone())
             # Só depois do COMMIT a tabela hash recebe o preço novo
@@ -143,6 +162,21 @@ class Servico:
             log.info("Produto %s alterado: preço %s, estoque %d.", codigo,
                      reais(linha["preco_centavos"]), linha["estoque"])
             del linha["id"]
+            return linha
+
+    def repor_estoque(self, codigo, unidades):
+        """Chegou mercadoria: SOMA `unidades` ao estoque, numa conta feita pelo
+        próprio banco (estoque = estoque + ?). Vendas feitas enquanto o
+        gerente digitava continuam descontadas: não há atualização perdida."""
+        with self._trava:
+            produto = self.produtos.buscar(codigo)
+            if produto is None:
+                raise Recusa("Produto {} não encontrado".format(codigo), 404)
+            with transacao(self._con) as con:
+                con.execute("UPDATE produtos SET estoque = estoque + ? WHERE id = ?", (unidades, produto["id"]))
+                linha = dict(con.execute("SELECT codigo, nome, preco_centavos, estoque "
+                                         "FROM produtos WHERE id = ?", (produto["id"],)).fetchone())
+            log.info("Reposição: +%d %s, estoque agora %d.", unidades, linha["nome"], linha["estoque"])
             return linha
 
     # ==================================================================
@@ -184,7 +218,9 @@ class Servico:
                         venda["uid_cartao"])
             raise Recusa("Cartão não cadastrado")
         if cartao["status"] != "ativo":
-            raise Recusa("Cartão bloqueado")
+            raise Recusa("Cartão bloqueado por segurança"
+                         if (cartao.get("motivo_bloqueio") or "").startswith("Suspeita")
+                         else "Cartão bloqueado")
 
         # Terminal bloqueado pelo gerente não faz vendas novas. As vendas feitas
         # offline ANTES do bloqueio ainda são aceitas quando chegam pela fila.
@@ -211,6 +247,12 @@ class Servico:
         if venda.get("total_centavos") not in (None, total):
             log.warning("Venda %s: o terminal calculou %s, o servidor cobrou %s.",
                         venda["id_transacao"], reais(venda["total_centavos"]), reais(total))
+
+        # Antifraude (extra): duas regras em O(1); se disparar, bloqueia o cartão já
+        suspeita = self.antifraude.avaliar(venda["uid_cartao"], total, venda["origem"])
+        if suspeita:
+            self._bloquear_por_suspeita(cartao, terminal_id, venda, "Suspeita de fraude: " + suspeita)
+            raise Recusa("Cartão bloqueado por segurança")
 
         # 4. Gravação ATÔMICA: estoque, saldo, venda, itens e auditoria juntos.
         #    Qualquer Recusa no meio desfaz tudo o que já foi feito (ROLLBACK).
@@ -246,9 +288,49 @@ class Servico:
             self._auditar(con, "venda_aprovada", terminal_id=terminal_id, conta_id=cartao["conta_id"],
                           transacao_id=transacao_id, valor_novo=total, detalhes=venda["id_transacao"])
 
+        if venda["origem"] == "online":
+            self.antifraude.registrar_aprovada(venda["uid_cartao"], total)
         log.info("Venda %s APROVADA: %s (%s). Saldo: %s.", venda["id_transacao"], reais(total),
                  cartao["titular"], reais(saldo))
         return 200, resposta
+
+    # ==================================================================
+    # Antifraude: bloqueio preventivo e desbloqueio pelo gerente
+    # ==================================================================
+
+    def _bloquear_por_suspeita(self, cartao, terminal_id, venda, motivo):
+        with transacao(self._con) as con:
+            con.execute("UPDATE cartoes SET status = 'bloqueado', motivo_bloqueio = ?, bloqueado_em = ? "
+                        "WHERE id = ?", (motivo, agora(), cartao["id"]))
+            self._auditar(con, "fraude_suspeita", terminal_id=terminal_id, conta_id=cartao["conta_id"],
+                          detalhes="{}: {} (venda {})".format(venda["uid_cartao"], motivo,
+                                                             venda["id_transacao"]))
+        self.cartoes.inserir(venda["uid_cartao"], dict(cartao, status="bloqueado", motivo_bloqueio=motivo))
+        log.warning(">>> CARTÃO %s BLOQUEADO POR SEGURANÇA: %s", venda["uid_cartao"], motivo)
+
+    def cartoes_bloqueados(self):
+        with self._trava:
+            linhas = self._con.execute(
+                "SELECT c.uid_rfid, c.apelido, cl.nome AS titular, c.motivo_bloqueio, c.bloqueado_em "
+                "FROM cartoes c JOIN contas ct ON ct.id = c.conta_id JOIN clientes cl ON cl.id = ct.cliente_id "
+                "WHERE c.status = 'bloqueado' ORDER BY c.bloqueado_em DESC, c.id").fetchall()
+        return [dict(linha) for linha in linhas]
+
+    def desbloquear_cartao(self, uid):
+        uid = uid.upper()
+        with self._trava:
+            cartao = self.cartoes.buscar(uid)
+            if cartao is None:
+                raise Recusa("Cartão não cadastrado", 404)
+            with transacao(self._con) as con:
+                con.execute("UPDATE cartoes SET status = 'ativo', motivo_bloqueio = NULL, bloqueado_em = NULL "
+                            "WHERE id = ?", (cartao["id"],))
+                self._auditar(con, "cartao_desbloqueado", conta_id=cartao["conta_id"],
+                              detalhes="{} (antes: {})".format(uid, cartao.get("motivo_bloqueio") or "bloqueado"))
+            self.cartoes.inserir(uid, dict(cartao, status="ativo", motivo_bloqueio=None))
+            self.antifraude.esquecer_tentativas(uid)
+        log.info("Cartão %s desbloqueado pelo gerente.", uid)
+        return {"uid": uid, "status": "ativo"}
 
     def _registrar_recusa(self, venda, terminal_id, cartao, codigo_http, resposta):
         """A recusa também fica registrada (em outra transação, já que a da
@@ -405,16 +487,83 @@ class Servico:
     # Consultas para o dashboard (Entrega 4)
     # ==================================================================
 
-    def listar_transacoes(self, limite=20):
+    @staticmethod
+    def _filtros(desde, terminal, prefixo="t", ate=None, campo_data="recebida_em"):
+        """Monta o WHERE comum dos relatórios (período e terminal)."""
+        condicoes, parametros = ["1 = 1"], []
+        if desde:
+            condicoes.append("{}.{} >= ?".format(prefixo, campo_data))
+            parametros.append(desde)
+        if ate:
+            condicoes.append("{}.{} < ?".format(prefixo, campo_data))
+            parametros.append(ate)
+        if terminal:
+            condicoes.append("te.codigo = ?")
+            parametros.append(terminal)
+        return " AND ".join(condicoes), parametros
+
+    def listar_transacoes(self, limite=20, desde=None, terminal=None, ate=None):
+        onde, parametros = self._filtros(desde, terminal, ate=ate)
         with self._trava:
             linhas = self._con.execute(
                 "SELECT t.id, t.id_transacao, te.codigo AS terminal, t.uid_cartao, cl.nome AS titular, "
-                "t.total_centavos, t.status, t.motivo, t.origem, t.recebida_em "
+                "t.total_centavos, t.status, t.motivo, t.origem, t.recebida_em, "
+                "t.criada_no_terminal, t.relogio_sincronizado "
                 "FROM transacoes t JOIN terminais te ON te.id = t.terminal_id "
                 "LEFT JOIN cartoes c ON c.id = t.cartao_id LEFT JOIN contas ct ON ct.id = c.conta_id "
-                "LEFT JOIN clientes cl ON cl.id = ct.cliente_id ORDER BY t.id DESC LIMIT ?",
-                (limite,)).fetchall()
+                "LEFT JOIN clientes cl ON cl.id = ct.cliente_id WHERE " + onde + " ORDER BY t.id DESC LIMIT ?",
+                parametros + [limite]).fetchall()
         return [dict(linha) for linha in linhas]
+
+    def listar_telemetria(self, desde=None, terminal=None, limite=5000):
+        """Histórico da telemetria (sinal, memória, fila), do mais antigo ao mais novo."""
+        onde, parametros = self._filtros(desde, terminal, prefixo="tl", campo_data="registrada_em")
+        with self._trava:
+            linhas = self._con.execute(
+                "SELECT te.codigo AS terminal, tl.registrada_em, tl.online, tl.rssi, tl.memoria_livre, "
+                "tl.fila_pendente FROM telemetria tl JOIN terminais te ON te.id = tl.terminal_id "
+                "WHERE " + onde + " ORDER BY tl.id DESC LIMIT ?", parametros + [limite]).fetchall()
+        return [dict(linha) for linha in reversed(linhas)]
+
+    def mais_vendidos(self, k=5, desde=None, terminal=None):
+        """Os k produtos com mais unidades vendidas no período.
+
+        AED: as quantidades são somadas numa TABELA HASH (código -> total,
+        O(1) por item vendido) e os k maiores saem de um HEAP de tamanho k
+        (heapq.nlargest): O(n log k), sem ordenar a lista inteira, que
+        custaria O(n log n). Vendas estornadas não contam.
+        """
+        onde, parametros = self._filtros(desde, terminal)
+        with self._trava:
+            linhas = self._con.execute(
+                "SELECT p.codigo, p.nome, i.quantidade, i.quantidade * i.preco_unitario_centavos AS receita "
+                "FROM itens_transacao i JOIN transacoes t ON t.id = i.transacao_id "
+                "JOIN terminais te ON te.id = t.terminal_id JOIN produtos p ON p.id = i.produto_id "
+                "WHERE t.status = 'aprovada' AND " + onde, parametros).fetchall()
+        totais = TabelaHash()
+        for linha in linhas:
+            atual = totais.buscar(linha["codigo"]) or {"codigo": linha["codigo"], "nome": linha["nome"],
+                                                       "unidades": 0, "receita_centavos": 0}
+            atual["unidades"] += linha["quantidade"]
+            atual["receita_centavos"] += linha["receita"]
+            totais.inserir(linha["codigo"], atual)
+        # Empate em unidades: maior receita primeiro; depois, o código (ordem estável)
+        return heapq.nlargest(k, (valor for _, valor in totais.itens()),
+                              key=lambda p: (p["unidades"], p["receita_centavos"], -int(p["codigo"])))
+
+    def listar_comandos(self, limite=10, terminal=None):
+        onde, parametros = self._filtros(None, terminal)
+        with self._trava:
+            linhas = self._con.execute(
+                "SELECT c.id, te.codigo AS terminal, c.tipo, c.parametros, c.status, c.criado_em, "
+                "c.executado_em, c.resultado FROM comandos c JOIN terminais te ON te.id = c.terminal_id "
+                "WHERE " + onde + " ORDER BY c.id DESC LIMIT ?", parametros + [limite]).fetchall()
+        comandos = []
+        for linha in linhas:
+            comando = dict(linha)
+            comando["parametros"] = json.loads(comando["parametros"])
+            comandos.append(comando)
+        return comandos
 
     def listar_terminais(self):
         with self._trava:

@@ -15,13 +15,14 @@ para testar cada rota pelo navegador, sem a placa.
 
 import logging
 import os
+from typing import Literal, Optional
 
 from fastapi import FastAPI, Query
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
-from . import banco
-from .modelos import AlteracaoProduto, Confirmacao, NovoComando, PedidoEstorno, Telemetria, Venda
+from . import banco, relatorios
+from .modelos import AlteracaoProduto, Confirmacao, NovoComando, PedidoEstorno, Reposicao, Telemetria, Venda
 from .servicos import Recusa, Servico
 
 log = logging.getLogger("bytebank")
@@ -113,12 +114,65 @@ def criar_app(caminho_banco=None):
 
     @app.patch("/produtos/{codigo}", tags=["gerente"])
     def alterar_produto(codigo: str, alteracao: AlteracaoProduto):
-        return servico.alterar_produto(codigo, alteracao.preco_centavos, alteracao.estoque)
+        """Muda o preço e/ou corrige a contagem do estoque. Com estoque_esperado,
+        responde 409 se uma venda mudou o estoque desde que o gerente olhou."""
+        return servico.alterar_produto(codigo, alteracao.preco_centavos, alteracao.estoque,
+                                       alteracao.estoque_esperado)
+
+    @app.post("/produtos/{codigo}/reposicao", tags=["gerente"])
+    def repor_estoque(codigo: str, reposicao: Reposicao):
+        """Chegou mercadoria: soma as unidades ao estoque atual."""
+        return servico.repor_estoque(codigo, reposicao.unidades)
 
     @app.get("/transacoes", tags=["gerente"])
-    def listar_transacoes(limite: int = Query(20, ge=1, le=500)):
-        """Últimas vendas (aprovadas, recusadas e estornadas)."""
-        return {"transacoes": servico.listar_transacoes(limite)}
+    def listar_transacoes(limite: int = Query(20, ge=1, le=5000),
+                          desde: Optional[str] = Query(None, description="ISO 8601 em UTC, ex. 2026-11-19T03:00:00Z"),
+                          ate: Optional[str] = Query(None, description="fim do período (exclusivo), ISO 8601 em UTC"),
+                          terminal: Optional[str] = None):
+        """Últimas vendas (aprovadas, recusadas e estornadas), da mais nova para a mais antiga."""
+        return {"transacoes": servico.listar_transacoes(limite, desde, terminal, ate)}
+
+    @app.get("/telemetria", tags=["gerente"])
+    def historico_telemetria(desde: Optional[str] = None, terminal: Optional[str] = None,
+                             limite: int = Query(5000, ge=1, le=50000)):
+        """Histórico de sinal do Wi-Fi, memória livre e fila offline de cada terminal."""
+        return {"telemetria": servico.listar_telemetria(desde, terminal, limite)}
+
+    @app.get("/relatorios/mais-vendidos", tags=["gerente"])
+    def mais_vendidos(k: int = Query(5, ge=1, le=9), desde: Optional[str] = None,
+                      terminal: Optional[str] = None):
+        """Top k produtos por unidades vendidas (tabela hash + heap)."""
+        return {"produtos": servico.mais_vendidos(k, desde, terminal)}
+
+    @app.get("/cartoes/bloqueados", tags=["gerente"])
+    def cartoes_bloqueados():
+        """Cartões bloqueados, com o motivo (inclui os bloqueados por suspeita de fraude)."""
+        return {"cartoes": servico.cartoes_bloqueados()}
+
+    @app.post("/cartoes/{uid}/desbloquear", tags=["gerente"])
+    def desbloquear_cartao(uid: str):
+        """O gerente libera um cartão bloqueado (por exemplo, depois de falar com o cliente)."""
+        return servico.desbloquear_cartao(uid)
+
+    @app.get("/relatorios/exportar", tags=["gerente"])
+    def exportar(formato: Literal["xlsx", "csv"] = "xlsx", desde: Optional[str] = None,
+                 terminal: Optional[str] = None):
+        """Relatório do período para baixar: Excel (5 abas) ou CSV (transações)."""
+        dados = relatorios.montar(servico, desde, terminal)
+        if formato == "csv":
+            conteudo, tipo = relatorios.para_csv(dados), "text/csv; charset=utf-8"
+        else:
+            conteudo = relatorios.para_excel(dados)
+            tipo = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        nome = relatorios.nome_do_arquivo(formato, terminal)
+        log.info("Relatório %s gerado: %d transações.", nome, len(dados["transacoes"]))
+        return Response(conteudo, media_type=tipo,
+                        headers={"Content-Disposition": 'attachment; filename="{}"'.format(nome)})
+
+    @app.get("/comandos", tags=["gerente"])
+    def listar_comandos(limite: int = Query(10, ge=1, le=200), terminal: Optional[str] = None):
+        """Últimos comandos enviados, com a situação (pendente ou executado)."""
+        return {"comandos": servico.listar_comandos(limite, terminal)}
 
     @app.get("/terminais", tags=["gerente"])
     def listar_terminais():

@@ -1,0 +1,14 @@
+# Tema do painel (streamlit run dashboard/app.py, rodando da pasta raiz).
+# Só troca a cor de destaque (botões, seleção) para o azul da paleta dos
+# gráficos. O vermelho padrão do Streamlit foi evitado porque, no painel,
+# vermelho significa problema (terminal bloqueado). O tema claro ou escuro
+# continua seguindo a configuração do computador.
+
+[theme.light]
+primaryColor = "#2a78d6"
+
+[theme.dark]
+primaryColor = "#3987e5"
+
+[browser]
+gatherUsageStats = false
