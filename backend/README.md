@@ -16,10 +16,11 @@ python -m backend                # da pasta raiz do repositório
 | `modelos.py` | formato de cada pacote (Pydantic) |
 | `servicos.py` | regras de negócio: venda, estorno, resumo, comandos, telemetria |
 | `antifraude.py` | detecção de fraude: janela deslizante por cartão e média das últimas compras |
+| `senhas.py` | senha do cartão: hash PBKDF2, regra dos R$ 20,00 e bloqueio após 3 erros |
 | `relatorios.py` | relatório para baixar: Excel (5 abas) e CSV |
 | `tabela_hash.py` | tabela hash implementada do zero (FNV-1a, encadeamento separado) |
 | `banco.py` | conexão com o SQLite e `transacao()`: BEGIN IMMEDIATE / COMMIT / ROLLBACK |
-| `tests/` | 85 testes, incluindo o ponta a ponta, a antifraude, a exportação e a reposição de estoque (`python -m pytest backend/tests -v`) |
+| `tests/` | 115 testes, incluindo o ponta a ponta, a antifraude, a exportação, a reposição de estoque, a senha do cartão e a aba Placa (USB) (`python -m pytest backend/tests -v`) |
 
 Rotas, exemplos e explicações: seção **Backend e banco de dados (Entrega 3)** do
 README principal. Com o servidor no ar, **http://localhost:8000/docs** permite

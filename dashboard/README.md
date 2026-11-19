@@ -14,6 +14,7 @@ streamlit run dashboard/app.py             # em outro, da pasta RAIZ do reposit�
 | `app.py` | telas: filtros, indicadores, terminais, gráficos, controle remoto, auditoria |
 | `graficos.py` | gráficos em Altair e as regras de visualização usadas |
 | `dados.py` | cliente da API e cálculos (indicadores, faturamento por hora, situação do terminal) |
+| `placa_usb.py` | aba Placa (USB): encontra a placa, grava o `config.py`, envia o código e lê o console (usa o `mpremote`) |
 
 O botão **Exportar relatório** baixa o período escolhido em Excel ou CSV (gerados
 pelo backend em `GET /relatorios/exportar`). Precisa do Streamlit 1.52 ou mais novo.

@@ -15,7 +15,7 @@ Organização da tela:
     filtros + exportar            (valem para tudo abaixo)
     alertas de fraude             (só quando há)
     números principais            (com a comparação com o período anterior)
-    abas: Vendas | Estoque | Terminais | Controle remoto
+    abas: Vendas | Estoque | Terminais | Controle remoto | Placa (USB)
 """
 
 import os
@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import dados  # noqa: E402
 import graficos  # noqa: E402
+import placa_usb  # noqa: E402
 
 URL_PADRAO = os.environ.get("BYTEBANK_API_URL", "http://127.0.0.1:8000")
 INTERVALO_S = 5
@@ -199,8 +200,8 @@ def topo():
         with st.container(border=True):
             st.markdown("**{} {}**".format(
                 chip_situacao("critico", "Alerta de segurança"),
-                "· 1 cartão bloqueado por suspeita de fraude" if len(alertas) == 1
-                else "· {} cartões bloqueados por suspeita de fraude".format(len(alertas))),
+                "· 1 cartão bloqueado por segurança" if len(alertas) == 1
+                else "· {} cartões bloqueados por segurança".format(len(alertas))),
                 unsafe_allow_html=True)
             for cartao in alertas:
                 texto, botao = st.columns([5, 1], vertical_alignment="center")
@@ -208,7 +209,7 @@ def topo():
                           if cartao["bloqueado_em"] else "")
                 texto.markdown("**Cartão {}** · {} · bloqueado às {}  \n{}".format(
                     cartao["uid_rfid"], cartao["titular"], quando,
-                    cartao["motivo_bloqueio"].replace("Suspeita de fraude: ", "Motivo: ")))
+                    "Motivo: " + dados.motivo_do_alerta(cartao["motivo_bloqueio"])))
                 if botao.button("Desbloquear", key="desbloquear_" + cartao["uid_rfid"],
                                 help="Libera o cartão depois de confirmar com o cliente."):
                     try:
@@ -252,8 +253,8 @@ def topo():
 
 topo()
 
-aba_vendas, aba_estoque, aba_terminais, aba_controle = st.tabs(
-    ["Vendas", "Estoque", "Terminais", "Controle remoto"])
+aba_vendas, aba_estoque, aba_terminais, aba_controle, aba_placa = st.tabs(
+    ["Vendas", "Estoque", "Terminais", "Controle remoto", "Placa (USB)"])
 
 
 # ---------------------------------------------------------------- aba Vendas
@@ -639,3 +640,131 @@ with aba_controle:
             } for r in registros]), hide_index=True, width="stretch")
         except dados.ErroAPI as erro:
             st.error("✕ {}".format(erro))
+
+
+# ---------------------------------------------------------------- aba Placa (USB)
+
+def acesso_local():
+    """A aba mexe no USB DESTE computador: só quem está nele pode usar.
+    Se o painel foi aberto de outro computador da rede, a aba fica travada."""
+    import ipaddress
+    try:
+        ip = st.context.ip_address
+    except Exception:       # Streamlit antigo: sem como saber; libera
+        return True
+    if not isinstance(ip, str):     # sem informação (ex.: testes automáticos)
+        return True
+    try:
+        endereco = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip == "localhost"
+    mapeado = getattr(endereco, "ipv4_mapped", None)       # ::ffff:127.0.0.1
+    return endereco.is_loopback or bool(mapeado and mapeado.is_loopback)
+
+
+def mostrar_verificacoes(linhas):
+    for nivel, texto in linhas:
+        (st.success if nivel == "bom" else st.error)(("✓ " if nivel == "bom" else "✕ ") + texto)
+
+
+with aba_placa:
+    st.subheader("Placa ligada no USB deste computador")
+    st.caption("Faz pelo painel o que hoje é feito no Thonny: configurar o Wi-Fi e o endereço do backend, "
+               "enviar o código e ver o console. **Feche o Thonny antes**: a porta USB só atende um "
+               "programa por vez.")
+    if not acesso_local():
+        st.info("Esta aba só funciona no computador onde a placa está ligada. Abra o painel nele, "
+                "em http://localhost:8501.")
+    elif not placa_usb.mpremote_instalado():
+        st.warning("⚠ Falta instalar o mpremote neste computador:  `pip install mpremote`  "
+                   "e reinicie o painel.")
+    else:
+        placas = placa_usb.listar_placas()
+        porta_col, atualizar_col = st.columns([3, 1], vertical_alignment="bottom")
+        with atualizar_col:
+            st.button("Procurar de novo", key="procurar_placa", width="stretch")
+        if not placas:
+            with porta_col:
+                st.info("Nenhuma placa encontrada no USB. Confira o cabo (alguns só carregam e não "
+                        "passam dados) e o driver do chip USB da placa (CH340 ou CP210x).")
+        else:
+            with porta_col:
+                rotulos = {"{} · {}".format(p["porta"], p["chip"]): p["porta"] for p in placas}
+                porta = rotulos[st.selectbox("Porta", list(rotulos), key="porta_placa")]
+            placa = placa_usb.Placa(porta)
+
+            # 1. Configurar ------------------------------------------------
+            st.markdown("##### 1. Wi-Fi e endereço do backend (config.py)")
+            atual = st.session_state.get("config_lido", {})
+            if st.button("Ler o config.py da placa", key="ler_config"):
+                try:
+                    with st.spinner("Lendo a placa..."):
+                        atual = st.session_state["config_lido"] = placa.ler_config()
+                    st.success("✓ Lido." if atual else "A placa ainda não tem config.py.")
+                except placa_usb.ErroPlaca as erro:
+                    st.error("✕ {}".format(erro))
+            with st.form("form_config"):
+                rede_col, senha_col = st.columns(2)
+                ssid = rede_col.text_input("Nome da rede Wi-Fi (2,4 GHz)", atual.get("WIFI_SSID", ""))
+                senha_wifi = senha_col.text_input(
+                    "Senha do Wi-Fi", type="password",
+                    placeholder="em branco: mantém a da placa" if atual.get("WIFI_SENHA") else "")
+                url_col, terminal_col = st.columns(2)
+                api_url = url_col.text_input(
+                    "Endereço do backend para a placa", placa_usb.api_url_para_a_placa(url),
+                    help="O IP deste computador na rede, que a placa consegue alcançar "
+                         "(não serve 127.0.0.1: para a placa, esse endereço é ela mesma).")
+                terminal_id = terminal_col.text_input("Terminal", atual.get("TERMINAL_ID", "POS-01"))
+                pino_col, pin_col = st.columns(2)
+                pino = pino_col.selectbox("Botão", [32, 0], index=0 if atual.get("PINO_BOTAO", 32) == 32 else 1,
+                                          format_func=lambda p: {32: "32 · botão no protoboard",
+                                                                 0: "0 · botão BOOT da placa"}[p])
+                pin_operador = pin_col.text_input(
+                    "PIN do modo operador (4 a 8 dígitos)", type="password",
+                    placeholder="em branco: mantém o da placa" if atual.get("PIN_OPERADOR") else "")
+                gravar = st.form_submit_button("Gravar na placa e reiniciar", type="primary")
+            if gravar:
+                valores = {"WIFI_SSID": ssid.strip(), "WIFI_SENHA": senha_wifi or atual.get("WIFI_SENHA", ""),
+                           "API_URL": api_url.strip(), "TERMINAL_ID": terminal_id.strip(), "PINO_BOTAO": pino,
+                           "PIN_OPERADOR": pin_operador or atual.get("PIN_OPERADOR", "")}
+                problemas = placa_usb.validar_config(valores)
+                if problemas:
+                    st.error("✕ Não gravado.  \n" + "  \n".join(problemas))
+                else:
+                    try:
+                        with st.spinner("Gravando o config.py e reiniciando a placa..."):
+                            placa.gravar_config(valores)
+                        st.session_state["config_lido"] = valores
+                        st.success("✓ config.py gravado e placa reiniciada. Veja o console abaixo para "
+                                   "conferir a conexão.")
+                    except placa_usb.ErroPlaca as erro:
+                        st.error("✕ {}".format(erro))
+
+            # 2. Enviar o código -------------------------------------------
+            st.markdown("##### 2. Enviar o código")
+            arquivos = placa_usb.arquivos_da_placa()
+            st.caption("Copia os {} arquivos .py da pasta esp32/ para a placa (substitui os que estão lá; "
+                       "o config.py não é mexido) e reinicia. Use quando o código mudar.".format(len(arquivos)))
+            if st.button("Enviar {} arquivos e reiniciar".format(len(arquivos)), key="enviar_codigo"):
+                try:
+                    with st.spinner("Enviando... (leva cerca de 1 minuto)"):
+                        enviados = placa.enviar_codigo(arquivos)
+                    st.success("✓ {} arquivos enviados e placa reiniciada.".format(enviados))
+                except placa_usb.ErroPlaca as erro:
+                    st.error("✕ {}".format(erro))
+
+            # 3. Console ---------------------------------------------------
+            st.markdown("##### 3. Console da placa")
+            reiniciar_col, escutar_col, _ = st.columns([1, 1, 3])
+            reiniciar = reiniciar_col.button("Reiniciar e ver (15 s)", key="console_reiniciar")
+            escutar = escutar_col.button("Só escutar (10 s)", key="console_escutar")
+            if reiniciar or escutar:
+                try:
+                    with st.spinner("Lendo o console..."):
+                        st.session_state["console"] = placa.console(15 if reiniciar else 10, reiniciar=reiniciar)
+                except placa_usb.ErroPlaca as erro:
+                    st.error("✕ {}".format(erro))
+            if st.session_state.get("console") is not None:
+                texto = st.session_state["console"]
+                mostrar_verificacoes(placa_usb.resumo_do_console(texto))
+                st.code(texto or "(a placa não escreveu nada nesse tempo)", language=None)

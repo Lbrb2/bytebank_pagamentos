@@ -436,6 +436,7 @@ bytebank-pay/
 │   ├── modelos.py         formato dos pacotes JSON (Pydantic)
 │   ├── servicos.py        regras de negócio: vendas, estornos, comandos
 │   ├── antifraude.py      detecção de fraude em tempo real (extra)
+│   ├── senhas.py          senha do cartão: hash PBKDF2 (extra)
 │   ├── relatorios.py      relatório para baixar, em Excel e CSV
 │   ├── tabela_hash.py     tabela hash implementada do zero (FNV-1a, encadeamento)
 │   ├── banco.py           conexão SQLite e transações atômicas
@@ -450,7 +451,8 @@ bytebank-pay/
 │   ├── app.py             telas: indicadores, terminais, gráficos, controle remoto
 │   ├── graficos.py        gráficos (Altair) e as regras de visualização
 │   ├── dados.py           conversa com a API e calcula os indicadores
-│   └── requirements.txt   dependências (streamlit, altair, pandas)
+│   ├── placa_usb.py       aba Placa (USB): config.py, código e console pelo cabo (extra)
+│   └── requirements.txt   dependências (streamlit, altair, pandas, mpremote)
 ├── .streamlit/config.toml cor de destaque do painel (azul da paleta)
 └── docs/                  diagramas em imagem; fotos e circuito (Entrega 2)
 ```
@@ -609,12 +611,12 @@ sem o OLED ligado.
 
 Tudo é feito com **um botão**, pelo tempo que ele fica apertado:
 
-| Gesto | No catálogo | No pagamento | No resultado / aviso |
-|---|---|---|---|
-| **Toque** (rápido) | desce o cursor `>` para o próximo item | — | volta ao catálogo |
-| **Segurar** (~1 s, até o bipe, e soltar) | escolhe o item do cursor: inclui o produto, vai para o **PAGAR** ou **Desfaz** a última inclusão | volta ao catálogo | volta ao catálogo |
-| **Segurar 5 s** | carrinho vazio: modo operador; com itens: esvazia o carrinho | — | — |
-| Aproximar o cartão | — | paga | — |
+| Gesto | No catálogo | No pagamento | Na senha | No resultado / aviso |
+|---|---|---|---|---|
+| **Toque** (rápido) | desce o cursor `>` para o próximo item | — | muda o dígito (0 → 9) | volta ao catálogo |
+| **Segurar** (~1 s, até o bipe, e soltar) | escolhe o item do cursor: inclui o produto, vai para o **PAGAR** ou **Desfaz** a última inclusão | volta ao catálogo | confirma o dígito | volta ao catálogo |
+| **Segurar 5 s** | carrinho vazio: modo operador; com itens: esvazia o carrinho | — | desiste da senha | — |
+| Aproximar o cartão | — | paga (a partir de R$ 20,00, pede a senha) | — | — |
 
 ```
 PRODUTOS     1/2        Com algo no carrinho, a lista ganha
@@ -631,6 +633,7 @@ Toque:> Segure:+
 flowchart LR
     C["CATÁLOGO<br/>toque: próximo item<br/>segurar: inclui produto<br/>ou desfaz o último"]
     P["PAGAMENTO<br/>mostra o total e<br/>aguarda o cartão"]
+    S["SENHA<br/>4 dígitos, compras<br/>a partir de R$ 20,00"]
     R["RESULTADO<br/>aprovada, recusada<br/>ou registrada offline"]
     O["OPERADOR<br/>PIN · cancelar venda<br/>resumo · enviar fila"]
     M["MENSAGEM<br/>aviso do gerente"]
@@ -638,6 +641,9 @@ flowchart LR
     C -- "segurar no PAGAR" --> P
     P -- "segurar ou 30 s sem cartão" --> C
     P -- "cartão aproximado" --> R
+    P -- "cartão, total ≥ R$ 20" --> S
+    S -- "4º dígito" --> R
+    S -- "segurar 5 s" --> P
     R -- "4 s ou botão" --> C
     C -- "segurar 5 s, carrinho vazio" --> O
     O -- "Sair ou 30 s sem uso" --> C
@@ -649,6 +655,17 @@ flowchart LR
 
 Se o pagamento for **recusado**, o carrinho é mantido para o cliente tentar outro
 cartão. Quando o terminal está sem conexão, aparece `OFF` no canto da tela.
+
+```
+SENHA DO CARTAO        A partir de R$ 20,00 o terminal pede a senha
+                       de 4 dígitos do cartão. Com o botão: toque muda
+Total     R$ 24,00     o dígito, segurar confirma. Os já confirmados
+                       viram * na tela. Com um teclado, é só digitar
+    * * 7 _            (* apaga). Detalhes em "Senha do cartão".
+
+Toque: muda
+Segure: confirma
+```
 
 #### Produto esgotado
 
@@ -794,12 +811,15 @@ Enviado pelo terminal em `POST /transacoes`:
   "total_centavos": 1300,
   "criada_em": "2026-11-05T14:03:10Z",
   "relogio_sincronizado": true,
-  "origem": "online"
+  "origem": "online",
+  "senha": "1234"
 }
 ```
 
 O `total_centavos` é só informativo: **o servidor recalcula o total** com os preços
-dele. `origem` é `"contingencia"` para vendas que passaram pela fila offline.
+dele. `origem` é `"contingencia"` para vendas que passaram pela fila offline. A
+`senha` só vai em compras online a partir de R$ 20,00 e **nunca é gravada**, nem na
+placa nem no servidor.
 
 Resposta aprovada (HTTP 200):
 
@@ -897,16 +917,20 @@ traz um motivo curto, que o terminal mostra na tela:
 
 Recusas de **regra de negócio** voltam com **HTTP 422** e ficam gravadas no banco:
 `Cartão não cadastrado`, `Cartão bloqueado`, `Terminal bloqueado`,
-`Produto 9 inexistente`, `Sem estoque de Chocolate`, `Saldo insuficiente`.
+`Produto 9 inexistente`, `Sem estoque de Chocolate`, `Saldo insuficiente`,
+`Senha obrigatória acima de R$ 20,00`, `Senha incorreta`.
 
 #### Dados de teste
 
-| Cartão (UID) | Saldo | Para testar |
-|---|---|---|
-| `532F07FE` (cartão branco da bancada) | R$ 1.000,00 | venda aprovada |
-| `93892B4F` (chaveiro azul da bancada) | R$ 5,00 | saldo insuficiente |
-| `DEADBEEF` | R$ 500,00 | cartão bloqueado |
-| `A1B2C3D4`, `11223344` | R$ 1.000,00 / R$ 10,00 | simulador |
+| Cartão (UID) | Cliente | Saldo | Senha | Para testar |
+|---|---|---|---|---|
+| `532F07FE` (cartão branco da bancada) | Cliente do cartão branco | R$ 1.000,00 | 1234 | venda aprovada |
+| `93892B4F` (chaveiro azul da bancada) | Cliente do chaveiro azul | R$ 5,00 | 4321 | saldo insuficiente |
+| `DEADBEEF` | Douglas Alves | R$ 500,00 | 0000 | cartão bloqueado |
+| `A1B2C3D4` | Amanda Silva | R$ 1.000,00 | 1111 | simulador |
+| `11223344` | Caio Ferreira | R$ 10,00 | 2222 | simulador |
+
+As senhas são fictícias e o banco guarda só o hash delas (ver "Senha do cartão").
 
 O Chocolate começa com estoque 2, para testar o `esgot` no terminal.
 
@@ -927,7 +951,7 @@ sqlite3 database/bytebank.db "SELECT criado_em, evento, valor_anterior, valor_no
 python -m pytest backend/tests -v
 ```
 
-São 85 testes (contando os da Entrega 4, da antifraude, da exportação e da reposição de estoque), em quatro grupos:
+São 115 testes (contando os da Entrega 4, da antifraude, da exportação, da reposição de estoque, da senha do cartão e da aba Placa (USB)), em quatro grupos:
 
 - **Tabela hash:** busca, colisões, redimensionamento e comparação com o `dict`
   em 5.000 operações aleatórias.
@@ -978,7 +1002,7 @@ No topo, sempre visíveis:
 |---|---|
 | Filtros | período (hoje, últimas 24 h, 7 dias, tudo) e terminal; valem para tudo abaixo deles |
 | Exportar relatório | baixa o relatório do período e terminal escolhidos, em Excel ou CSV (ver abaixo) |
-| Alerta de segurança | aparece quando a antifraude bloqueia um cartão, com o motivo e um botão **Desbloquear** |
+| Alerta de segurança | aparece quando um cartão é bloqueado automaticamente (antifraude ou senha errada 3 vezes), com o motivo e um botão **Desbloquear** |
 | Números principais | faturamento em destaque; vendas aprovadas (quantas pela fila offline), ticket médio, recusadas (% das tentativas) e estornos, cada um com a **variação em relação ao período anterior** |
 
 Embaixo, em abas:
@@ -989,6 +1013,7 @@ Embaixo, em abas:
 | **Estoque** | **estoque com previsão**: quanto tempo cada produto dura no ritmo da última hora, do mais urgente ao menos; formulário com três ações (**chegou mercadoria**, que soma; **corrigir contagem**, que confere se houve venda no meio; e **mudar preço**), que avisa os terminais |
 | **Terminais** | situação agora (online, sem contato, bloqueado); **saúde ao longo do tempo** (sinal do Wi-Fi e memória livre de cada placa, com aviso de possível vazamento de memória); **fila offline** (quanto as vendas sem conexão esperaram até chegar) |
 | **Controle remoto** | mensagem, bloquear, desbloquear e atualizar catálogo, com a situação de cada comando (… aguardando, ✓ executado com o que a placa respondeu, ou ✕ erro); auditoria |
+| **Placa (USB)** | o que hoje é feito no Thonny, pelo painel: configurar o Wi-Fi e o endereço do backend (`config.py`), enviar o código e ver o console da placa (ver abaixo) |
 
 Como cada parte nova funciona:
 
@@ -1140,6 +1165,64 @@ auditoria (`estoque_alterado`, com o valor de antes e o de depois). Os testes
 (`backend/tests/test_estoque.py`) repetem a cena acima e também rodam **10
 reposições e 10 vendas ao mesmo tempo**: o estoque final sempre fecha a conta.
 
+### Senha do cartão (extra)
+
+![Alerta de segurança com os dois tipos de bloqueio automático](docs/dashboard_alerta_senha.png)
+
+Como numa maquininha de verdade: compras **até R$ 20,00** passam só com o cartão
+(como por aproximação); **a partir de R$ 20,00** o terminal pede a **senha de 4
+dígitos** do cartão. Com o botão, toque muda o dígito e segurar confirma; quando o
+teclado chegar, é só digitar.
+
+| Regra | Como funciona |
+|---|---|
+| O banco **nunca guarda a senha** | só o hash **PBKDF2-SHA256** com *salt* aleatório e 100 mil iterações (`backend/senhas.py`). Quem copiar o banco teria de testar as 10 mil senhas possíveis, cada uma 100 mil vezes mais cara que um SHA-256 comum, e de novo para cada cartão, porque o *salt* muda |
+| A comparação não vaza tempo | `hmac.compare_digest` leva o mesmo tempo acertando ou errando |
+| **3 senhas erradas seguidas bloqueiam** o cartão | o contador `pin_erros` sobe numa transação própria (a recusa da venda não pode desfazê-lo); na 3ª, o cartão fica bloqueado e o painel mostra o **alerta de segurança**. Uma senha certa zera o contador; o gerente desbloqueia pelo painel |
+| A senha não fica guardada em lugar nenhum | vai só no pacote online; não entra na fila offline (nem na flash), não aparece no console, e o servidor não a grava no banco nem nos logs |
+| Sem conexão, não pede | a placa não tem como conferir offline; a venda entra na fila sem senha, limitada a R$ 50,00 (o risco da contingência) |
+| Auditoria | eventos `senha_incorreta` e `senha_bloqueio`, com o número da tentativa |
+
+No painel, as tentativas erradas aparecem em **Recusas por motivo** como
+`Senha incorreta`. Testes: `backend/tests/test_senha.py` (regras, hash, bloqueio,
+migração de um banco da Entrega 3) e `test_senha_na_placa.py` (o código real da
+placa, digitando a senha com o botão simulado).
+
+> Em produção, a senha viajaria **criptografada** (HTTPS, e nas maquininhas reais
+> um bloco de PIN cifrado no próprio leitor). Aqui ela vai em HTTP pela rede local,
+> o que basta para o projeto, mas não para um banco de verdade.
+
+### Placa (USB): o Thonny dentro do painel (extra)
+
+![Aba Placa (USB) do painel](docs/dashboard_placa_usb.png)
+
+*Captura com uma placa simulada (a resposta do console é um exemplo). Tema escuro: [`docs/dashboard_placa_usb_escuro.png`](docs/dashboard_placa_usb_escuro.png).*
+
+A aba **Placa (USB)** faz pelo painel o que hoje é feito no Thonny, usando o
+`mpremote` (a ferramenta oficial do MicroPython, instalada com o
+`dashboard/requirements.txt`):
+
+| Parte | O que faz |
+|---|---|
+| Porta | encontra as placas ESP32 ligadas no USB pelo chip (CH340, CP210x, FTDI ou USB nativo) |
+| 1. Wi-Fi e backend | lê o `config.py` da placa, preenche sozinho o **endereço do backend com o IP deste computador na rede** (o erro mais comum era deixar `127.0.0.1`), confere os valores e grava o `config.py` novo, reiniciando a placa. As senhas não aparecem na tela; em branco, mantém as da placa |
+| 2. Enviar o código | copia os `.py` da pasta `esp32/` para a placa e reinicia (o `config.py` não é mexido) |
+| 3. Console | reinicia a placa e mostra o que ela escreve (o "Shell" do Thonny), com um resumo: ✓ Wi-Fi conectado, ✓ backend respondeu, ✓ terminal pronto, ou o que falhou |
+
+Cuidados que a aba já trata:
+
+- **só funciona no computador onde a placa está plugada**: aberta de outro
+  computador da rede, a aba fica travada (ninguém mexe na placa pela rede);
+- **a porta USB atende um programa por vez**: com o Thonny conectado, a aba avisa
+  "feche o Thonny";
+- o `config.py` lido da placa é interpretado **sem ser executado** (só valores
+  simples, com `ast.literal_eval`);
+- a porta é aberta com os sinais **DTR e RTS desligados**, que nas placas ESP32
+  ligam no EN e no GPIO0 e poderiam deixá-la presa em reset.
+
+O Thonny continua sendo melhor para **programar** (editar e testar linha a linha);
+a aba resolve as tarefas repetitivas de configurar, enviar e conferir.
+
 ### Teste ponta a ponta
 
 **Automático** (`backend/tests/test_ponta_a_ponta.py`): o código real do terminal
@@ -1214,6 +1297,8 @@ python -m pytest backend/tests/test_ponta_a_ponta.py -v
 - [x] Extras no painel: variação em relação ao período anterior, estoque com previsão, saúde dos terminais (sinal e memória), horário de pico e tempo da fila offline
 - [x] Extra: detecção de fraude em tempo real (janela deslizante e média móvel), com bloqueio preventivo e alerta no painel
 - [x] Extra: reposição de estoque sem atualização perdida (soma atômica no banco e compare-and-set na correção de contagem)
+- [x] Extra: senha do cartão a partir de R$ 20,00 (hash PBKDF2, bloqueio após 3 erros, alerta no painel)
+- [x] Extra: aba Placa (USB) no painel: configurar Wi-Fi e backend, enviar o código e ver o console sem o Thonny
 - [ ] Teste ponta a ponta na bancada (roteiro acima) e vídeo para a apresentação
 
 ### Entrega 3 — checklist

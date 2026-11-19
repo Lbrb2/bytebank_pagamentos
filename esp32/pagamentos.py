@@ -16,6 +16,12 @@ a resposta se perder no caminho, o terminal a reenvia pela fila; com o
 mesmo id, o servidor reconhece a repetição e não cobra duas vezes
 (idempotência).
 
+Senha do cartão: compras a partir de LIMITE_SEM_SENHA_CENTAVOS pedem a
+senha de 4 dígitos (o terminal.py mostra a tela). A senha vai só no envio
+ONLINE e nunca é gravada: não entra na fila offline, não vai para a flash
+nem aparece no console. Sem conexão, a venda segue sem senha (o servidor
+aceita, porque não há como conferir offline) e vale o limite offline.
+
 O modo operador também usa esta classe para cancelar a última venda
 (estorno), ver o resumo do caixa e esvaziar a fila offline na hora.
 """
@@ -24,6 +30,7 @@ import os
 import time
 
 LIMITE_OFFLINE_CENTAVOS = 5000   # R$ 50,00 por venda sem conexão
+LIMITE_SEM_SENHA_CENTAVOS = 2000  # a partir de R$ 20,00 pede a senha (o mesmo valor do backend/senhas.py)
 ANO_MINIMO_RELOGIO_OK = 2024     # antes disso, o relógio não foi sincronizado
 
 APROVADA = "aprovada"
@@ -66,14 +73,21 @@ class Pagamentos:
             "origem": "online",
         }
 
-    def pagar(self, uid_cartao, itens, total_centavos):
+    def pagar(self, uid_cartao, itens, total_centavos, senha=None):
         """Processa uma venda. Devolve um dicionário com a 'situacao'
         (APROVADA, RECUSADA ou OFFLINE) e os dados para a tela."""
         transacao = self.montar_transacao(uid_cartao, itens, total_centavos)
         resultado = None
 
         if self._api is not None and self._conectado():
-            codigo, corpo = self._api.enviar_transacao(transacao)
+            # A senha vai só nesta cópia do pacote: a `transacao` original,
+            # que pode ir para a fila offline (e para a flash), fica sem ela.
+            envio = transacao
+            if senha:
+                envio = dict(transacao)
+                envio["senha"] = senha
+            codigo, corpo = self._api.enviar_transacao(envio)
+            envio = None
             if codigo is not None and codigo < 500:
                 resultado = self._interpretar(codigo, corpo, total_centavos)
             else:
@@ -99,6 +113,8 @@ class Pagamentos:
                 "saldo_centavos": corpo.get("saldo_centavos"),
             }
         motivo = corpo.get("motivo") or "Recusada pelo servidor (HTTP {})".format(codigo)
+        if corpo.get("detalhe"):                   # ex.: "Senha incorreta" + "Cartão bloqueado"
+            motivo = "{}. {}".format(motivo, corpo["detalhe"])
         return {"situacao": RECUSADA, "motivo": motivo}
 
     def _contingencia(self, transacao):

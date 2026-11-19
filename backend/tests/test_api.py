@@ -189,7 +189,7 @@ def test_banco_recusa_saldo_negativo_e_altera_auditoria(cliente, banco):
 # ---------------------------------------------------------------- estorno e resumo
 
 def test_estorno_devolve_dinheiro_e_estoque(cliente, banco):
-    cliente.post("/transacoes", json=venda("V1", itens=(("6", 2),)))
+    cliente.post("/transacoes", json=venda("V1", itens=(("6", 2),), senha="1234"))   # R$ 24: pede senha
     resposta = cliente.post("/estornos", json={"id_transacao": "V1", "terminal": "POS-01"})
     assert resposta.status_code == 200
     assert resposta.json() == {"status": "estornada", "total_centavos": 2400, "saldo_centavos": 100000}

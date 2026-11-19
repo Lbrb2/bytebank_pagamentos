@@ -112,7 +112,7 @@ def test_valor_fora_do_padrao_bloqueia(servico, banco):
     for numero in range(3):
         servico.processar_venda(venda("V{}".format(numero), itens=(("1", 1),)))   # R$ 5,00 cada
         relogio.agora += 120
-    codigo, resposta = servico.processar_venda(venda("V3", itens=(("6", 5),)))     # R$ 60,00
+    codigo, resposta = servico.processar_venda(venda("V3", itens=(("6", 5),), senha="1234"))     # R$ 60,00
     assert codigo == 422 and resposta["motivo"] == "Cartão bloqueado por segurança"
     motivo = banco.execute("SELECT motivo_bloqueio FROM cartoes WHERE uid_rfid = '532F07FE'").fetchone()[0]
     assert motivo == "Suspeita de fraude: valor de R$ 60,00 acima de 5x a média (R$ 5,00)"

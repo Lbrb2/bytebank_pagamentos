@@ -31,6 +31,9 @@ class Venda(BaseModel):
     criada_em: Optional[str] = Field(default=None, max_length=32)
     relogio_sincronizado: StrictBool = False
     origem: Literal["online", "contingencia"] = "online"
+    senha: Optional[str] = Field(default=None, pattern=r"^[0-9]{4}$",
+                                 description="senha do cartão (4 dígitos), só em compras a partir de R$ 20,00; "
+                                             "nunca é gravada")
 
     @field_validator("uid_cartao")
     @classmethod

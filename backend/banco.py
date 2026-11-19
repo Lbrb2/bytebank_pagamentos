@@ -51,11 +51,19 @@ def conectar(caminho=CAMINHO_PADRAO):
 
 def migrar(conexao):
     """Atualiza um banco criado por uma versão anterior do schema.sql, sem
-    perder os dados. (Entrega 4: colunas do bloqueio por suspeita de fraude.)"""
+    perder os dados. (Entrega 4: colunas do bloqueio por suspeita de fraude
+    e da senha do cartão. Cartões antigos ficam sem senha até alguém
+    cadastrar uma: para eles, a compra não pede senha.)"""
     colunas = {linha["name"] for linha in conexao.execute("PRAGMA table_info(cartoes)")}
-    for coluna in ("motivo_bloqueio", "bloqueado_em"):
+    novas = (
+        ("motivo_bloqueio", "TEXT"),
+        ("bloqueado_em", "TEXT"),
+        ("pin_hash", "TEXT CHECK (pin_hash IS NULL OR pin_hash LIKE 'pbkdf2_sha256$%')"),
+        ("pin_erros", "INTEGER NOT NULL DEFAULT 0 CHECK (pin_erros BETWEEN 0 AND 3)"),
+    )
+    for coluna, definicao in novas:
         if coluna not in colunas:
-            conexao.execute("ALTER TABLE cartoes ADD COLUMN {} TEXT".format(coluna))
+            conexao.execute("ALTER TABLE cartoes ADD COLUMN {} {}".format(coluna, definicao))
 
 
 def criar_tabelas(conexao, com_dados_de_teste=True):

@@ -21,6 +21,9 @@ O terminal está sempre em um destes estados:
   CATALOGO   lista os produtos com um cursor (>). Com itens no carrinho,
              a lista ganha no fim "PAGAR" e "Desfazer ultimo"
   PAGAMENTO  mostra o total e espera o cartão. Segurar volta ao catálogo
+  SENHA      compras a partir de R$ 20,00: pede a senha de 4 dígitos do
+             cartão (toque muda o dígito, segurar confirma; no teclado,
+             é só digitar). Segurar 5 s cancela e volta ao pagamento
   RESULTADO  mostra aprovada, recusada ou registrada offline
   OPERADOR   menu protegido por PIN (ver operador.py)
   MENSAGEM   aviso enviado pelo gerente (comando remoto)
@@ -40,6 +43,7 @@ import pagamentos as pg
 
 CATALOGO = "catalogo"
 PAGAMENTO = "pagamento"
+SENHA = "senha"
 RESULTADO = "resultado"
 OPERADOR = "operador"
 MENSAGEM = "mensagem"
@@ -58,6 +62,8 @@ PRODUTOS_POR_PAGINA = 5
 TEMPO_RESULTADO_MS = 4000
 TEMPO_PAGAMENTO_MS = 30000
 TEMPO_OPERADOR_MS = 30000      # sai do modo operador após 30 s sem tecla
+TEMPO_SENHA_MS = 30000         # desiste da senha após 30 s sem tecla
+TAMANHO_SENHA = 4
 TEMPO_AVISO_MS = 1500
 INTERVALO_REDESENHO_MS = 1000
 ASTERISCOS_PARA_OPERADOR = 3
@@ -96,6 +102,9 @@ class Terminal:
         self._motivo_bloqueio = ""
         self._asteriscos = 0
         self._asterisco_desde = 0
+        self._uid_da_senha = None    # cartão esperando a senha
+        self._senha = ""             # dígitos confirmados (só na memória, nunca gravados)
+        self._digito = 0             # dígito da vez, para quem usa o botão
         self._estado_desde = self._agora()
         self._ultima_tecla = self._agora()
         self._ultimo_redesenho = self._agora()
@@ -110,6 +119,8 @@ class Terminal:
         elif self.estado == PAGAMENTO:
             if tecla in ("*", SEGURAR):
                 self._mudar_para(CATALOGO)
+        elif self.estado == SENHA:
+            self._tecla_na_senha(tecla)
         elif self.estado == RESULTADO:
             self._voltar_ao_catalogo()
         elif self.estado == OPERADOR:
@@ -126,10 +137,23 @@ class Terminal:
         if self.estado != PAGAMENTO:
             return
         total = self._carrinho.total_centavos(self._catalogo)
+        # Sem conexão não adianta pedir: a senha só é conferida pelo servidor
+        if total >= pg.LIMITE_SEM_SENHA_CENTAVOS and self._conectado():
+            self._uid_da_senha = uid
+            self._senha = ""
+            self._digito = 0
+            self._sinal.tecla()
+            self._mudar_para(SENHA)
+            self.redesenhar()
+            return
+        self._cobrar(uid)
+
+    def _cobrar(self, uid, senha=None):
+        total = self._carrinho.total_centavos(self._catalogo)
         self._display.mostrar(["", "", centralizar("Processando..."), "",
                                centralizar(reais(total))])
         itens = self._carrinho.itens()
-        resultado = self._pagamentos.pagar(uid, itens, total)
+        resultado = self._pagamentos.pagar(uid, itens, total, senha)
         self._resultado = resultado
         if resultado["situacao"] in (pg.APROVADA, pg.OFFLINE):
             self._catalogo.baixar_estoque(itens)
@@ -151,6 +175,12 @@ class Terminal:
         elif self.estado == PAGAMENTO and tempo_no_estado >= TEMPO_PAGAMENTO_MS:
             self._mudar_para(CATALOGO)
             self._avisar("Tempo esgotado")
+        elif (self.estado == SENHA
+              and self._diferenca(agora, self._ultima_tecla) >= TEMPO_SENHA_MS
+              and tempo_no_estado >= TEMPO_SENHA_MS):
+            self._esquecer_senha()
+            self._mudar_para(CATALOGO)
+            self._avisar("Tempo esgotado")
         elif self.estado == MENSAGEM and tempo_no_estado >= self._duracao_mensagem:
             self._mudar_para(CATALOGO)
         elif (self.estado == OPERADOR
@@ -167,6 +197,7 @@ class Terminal:
     def bloquear(self, motivo):
         self._motivo_bloqueio = motivo
         self._carrinho.limpar()
+        self._esquecer_senha()
         if self.estado == OPERADOR:
             self._operador.fechar()
         self._mudar_para(BLOQUEADO)
@@ -275,6 +306,41 @@ class Terminal:
             self._cursor = tecla if self._catalogo.buscar(tecla) else self._cursor
             self._incluir(tecla)
 
+    # ---------------- Senha do cartão ----------------
+
+    def _tecla_na_senha(self, tecla):
+        """Botão: TOQUE muda o dígito (0..9), SEGURAR confirma, segurar 5 s
+        cancela. Teclado: dígitos entram direto, * apaga, # confirma."""
+        if tecla == SEGURAR_LONGO:
+            self._esquecer_senha()
+            self._mudar_para(PAGAMENTO)
+            return
+        if tecla == TOQUE:
+            self._digito = (self._digito + 1) % 10
+        elif tecla == SEGURAR:
+            self._senha += str(self._digito)
+            self._digito = 0
+        elif tecla == "*":
+            if not self._senha:
+                self._esquecer_senha()
+                self._mudar_para(PAGAMENTO)
+                return
+            self._senha = self._senha[:-1]
+        elif len(tecla) == 1 and tecla in "0123456789":
+            self._senha += tecla
+        elif tecla != "#":
+            return
+        self._sinal.tecla()
+        if len(self._senha) >= TAMANHO_SENHA:
+            uid, senha = self._uid_da_senha, self._senha
+            self._esquecer_senha()
+            self._cobrar(uid, senha)
+
+    def _esquecer_senha(self):
+        self._uid_da_senha = None
+        self._senha = ""
+        self._digito = 0
+
     def _ir_para_pagamento(self):
         if self._carrinho.vazio():
             self._sinal.erro()
@@ -361,6 +427,8 @@ class Terminal:
             linhas = self._tela_catalogo()
         elif self.estado == PAGAMENTO:
             linhas = self._tela_pagamento()
+        elif self.estado == SENHA:
+            linhas = self._tela_senha()
         elif self.estado == OPERADOR:
             linhas = self._operador.linhas()
         elif self.estado == MENSAGEM:
@@ -427,6 +495,22 @@ class Terminal:
             centralizar("Aproxime o"),
             centralizar("cartao..."),
             esquerda_direita("Segure: volta", "OFF" if self._offline() else ""),
+        ]
+
+    def _tela_senha(self):
+        # Confirmados viram *; o dígito da vez aparece (quem usa o botão
+        # precisa vê-lo); o resto fica _ .  Ex.: "* * 7 _"
+        faltam = TAMANHO_SENHA - len(self._senha) - 1
+        posicoes = ["*"] * len(self._senha) + [str(self._digito)] + ["_"] * max(faltam, 0)
+        return [
+            centralizar("SENHA DO CARTAO"),
+            "",
+            esquerda_direita("Total", reais(self._carrinho.total_centavos(self._catalogo))),
+            "",
+            centralizar(" ".join(posicoes[:TAMANHO_SENHA])),
+            "",
+            "Toque: muda",
+            "Segure: confirma",
         ]
 
     def _tela_resultado(self):

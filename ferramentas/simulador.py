@@ -32,6 +32,10 @@ Outros comandos:
     fila         mostra as vendas pendentes
     sair         encerra
 
+Senha do cartão: compras a partir de R$ 20,00 pedem a senha de 4 dígitos.
+Digite os dígitos (ex.: 1234, a do cartão branco 532F07FE) ou use o botão:
+"." muda o dígito e "-" confirma. "*" apaga.
+
 Modo operador: com o carrinho vazio, "!" (ou ***) e depois o PIN. Atalho:
 ***2580#. O PIN do simulador é 2580, ou o da variável BYTEBANK_PIN.
 

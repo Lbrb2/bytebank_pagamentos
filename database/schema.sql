@@ -47,7 +47,10 @@ CREATE TABLE cartoes (
     apelido          TEXT,
     status           TEXT    NOT NULL DEFAULT 'ativo' CHECK (status IN ('ativo', 'bloqueado')),
     motivo_bloqueio  TEXT,                    -- ex.: "Suspeita de fraude: 4 compras em menos de 60 s"
-    bloqueado_em     TEXT
+    bloqueado_em     TEXT,
+    -- Senha do cartão: só o hash PBKDF2 (ver backend/senhas.py), nunca a senha
+    pin_hash         TEXT CHECK (pin_hash IS NULL OR pin_hash LIKE 'pbkdf2_sha256$%'),
+    pin_erros        INTEGER NOT NULL DEFAULT 0 CHECK (pin_erros BETWEEN 0 AND 3)
 );
 
 -- ---------------------------------------------------------------------

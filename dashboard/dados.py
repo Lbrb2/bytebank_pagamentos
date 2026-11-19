@@ -221,8 +221,16 @@ def recusas_por_motivo(transacoes):
 
 
 def alertas_de_fraude(cartoes_bloqueados):
-    """Só os bloqueios automáticos por suspeita (os bloqueios do banco não são alertas)."""
-    return [c for c in cartoes_bloqueados if (c.get("motivo_bloqueio") or "").startswith("Suspeita")]
+    """Só os bloqueios automáticos de segurança: suspeita de fraude ou senha
+    errada 3 vezes (os bloqueios administrativos do banco não são alertas)."""
+    return [c for c in cartoes_bloqueados
+            if (c.get("motivo_bloqueio") or "").startswith(("Suspeita", "Senha incorreta"))]
+
+
+def motivo_do_alerta(motivo):
+    """'Suspeita de fraude: 4 compras...' -> 'suspeita de fraude, 4 compras...'."""
+    texto = (motivo or "").replace("Suspeita de fraude: ", "suspeita de fraude, ")
+    return texto[:1].lower() + texto[1:]
 
 
 def situacao_do_terminal(terminal, agora=None):

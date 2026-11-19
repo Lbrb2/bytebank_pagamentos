@@ -32,6 +32,7 @@ import logging
 import threading
 from datetime import datetime, timezone
 
+from . import senhas
 from .antifraude import Antifraude
 from .banco import transacao
 from .tabela_hash import TabelaHash
@@ -43,6 +44,13 @@ def agora():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def bloqueio_de_seguranca(motivo):
+    """Bloqueio automático do sistema (antifraude ou senha errada 3 vezes),
+    diferente do bloqueio administrativo do banco. Aparece como alerta no
+    painel e responde "Cartão bloqueado por segurança"."""
+    return (motivo or "").startswith(("Suspeita", "Senha incorreta"))
+
+
 def reais(centavos):
     texto = "{:,.2f}".format(centavos / 100)
     return "R$ " + texto.replace(",", "X").replace(".", ",").replace("X", ".")
@@ -51,10 +59,11 @@ def reais(centavos):
 class Recusa(Exception):
     """Regra de negócio que impede a operação (vira HTTP 4xx com um motivo)."""
 
-    def __init__(self, motivo, codigo_http=422):
+    def __init__(self, motivo, codigo_http=422, detalhe=None):
         super().__init__(motivo)
-        self.motivo = motivo
+        self.motivo = motivo            # vai para o banco e para "Recusas por motivo"
         self.codigo_http = codigo_http
+        self.detalhe = detalhe          # complemento só para a tela do terminal
 
 
 class Servico:
@@ -75,7 +84,8 @@ class Servico:
 
     def _carregar_tabelas_hash(self):
         for linha in self._con.execute(
-                "SELECT c.id, c.uid_rfid, c.conta_id, c.status, c.motivo_bloqueio, cl.nome AS titular "
+                "SELECT c.id, c.uid_rfid, c.conta_id, c.status, c.motivo_bloqueio, c.pin_hash, "
+                "cl.nome AS titular "
                 "FROM cartoes c JOIN contas ct ON ct.id = c.conta_id "
                 "JOIN clientes cl ON cl.id = ct.cliente_id"):
             self.cartoes.inserir(linha["uid_rfid"], dict(linha))
@@ -206,6 +216,8 @@ class Servico:
             except Recusa as recusa:
                 codigo_http = recusa.codigo_http
                 resposta = {"status": "recusada", "motivo": recusa.motivo}
+                if recusa.detalhe:
+                    resposta["detalhe"] = recusa.detalhe
                 self._registrar_recusa(venda, terminal_id, cartao, codigo_http, resposta)
                 log.info("Venda %s RECUSADA: %s", venda["id_transacao"], recusa.motivo)
 
@@ -218,8 +230,7 @@ class Servico:
                         venda["uid_cartao"])
             raise Recusa("Cartão não cadastrado")
         if cartao["status"] != "ativo":
-            raise Recusa("Cartão bloqueado por segurança"
-                         if (cartao.get("motivo_bloqueio") or "").startswith("Suspeita")
+            raise Recusa("Cartão bloqueado por segurança" if bloqueio_de_seguranca(cartao.get("motivo_bloqueio"))
                          else "Cartão bloqueado")
 
         # Terminal bloqueado pelo gerente não faz vendas novas. As vendas feitas
@@ -247,6 +258,10 @@ class Servico:
         if venda.get("total_centavos") not in (None, total):
             log.warning("Venda %s: o terminal calculou %s, o servidor cobrou %s.",
                         venda["id_transacao"], reais(venda["total_centavos"]), reais(total))
+
+        # Senha do cartão (extra): compras online a partir de R$ 20,00
+        if senhas.precisa_de_senha(total, venda["origem"], cartao.get("pin_hash")):
+            self._conferir_senha(venda, terminal_id, cartao)
 
         # Antifraude (extra): duas regras em O(1); se disparar, bloqueia o cartão já
         suspeita = self.antifraude.avaliar(venda["uid_cartao"], total, venda["origem"])
@@ -298,6 +313,34 @@ class Servico:
     # Antifraude: bloqueio preventivo e desbloqueio pelo gerente
     # ==================================================================
 
+    def _conferir_senha(self, venda, terminal_id, cartao):
+        """Confere a senha antes de mexer no saldo. Errou: soma 1 ao contador
+        do cartão, numa transação PRÓPRIA (a Recusa a seguir desfaria a
+        da venda); na 3ª seguida, bloqueia o cartão. Acertou: zera."""
+        if not venda.get("senha"):
+            raise Recusa("Senha obrigatória acima de {}".format(senhas.reais(senhas.LIMITE_SEM_SENHA_CENTAVOS)))
+        if senhas.conferir(venda["senha"], cartao["pin_hash"]):
+            with transacao(self._con) as con:
+                con.execute("UPDATE cartoes SET pin_erros = 0 WHERE id = ? AND pin_erros > 0", (cartao["id"],))
+            return
+
+        with transacao(self._con) as con:
+            con.execute("UPDATE cartoes SET pin_erros = pin_erros + 1 WHERE id = ?", (cartao["id"],))
+            erros = con.execute("SELECT pin_erros FROM cartoes WHERE id = ?", (cartao["id"],)).fetchone()[0]
+            bloqueou = erros >= senhas.TENTATIVAS
+            if bloqueou:
+                motivo = "Senha incorreta {} vezes seguidas".format(erros)
+                con.execute("UPDATE cartoes SET status = 'bloqueado', motivo_bloqueio = ?, bloqueado_em = ? "
+                            "WHERE id = ?", (motivo, agora(), cartao["id"]))
+            self._auditar(con, "senha_bloqueio" if bloqueou else "senha_incorreta", terminal_id=terminal_id,
+                          conta_id=cartao["conta_id"], valor_novo=erros,
+                          detalhes="{} (venda {})".format(venda["uid_cartao"], venda["id_transacao"]))
+        if bloqueou:
+            self.cartoes.inserir(venda["uid_cartao"], dict(cartao, status="bloqueado", motivo_bloqueio=motivo))
+            log.warning(">>> CARTÃO %s BLOQUEADO: senha incorreta %d vezes.", venda["uid_cartao"], erros)
+            raise Recusa("Senha incorreta", detalhe="Cartão bloqueado")
+        raise Recusa("Senha incorreta")
+
     def _bloquear_por_suspeita(self, cartao, terminal_id, venda, motivo):
         with transacao(self._con) as con:
             con.execute("UPDATE cartoes SET status = 'bloqueado', motivo_bloqueio = ?, bloqueado_em = ? "
@@ -323,8 +366,8 @@ class Servico:
             if cartao is None:
                 raise Recusa("Cartão não cadastrado", 404)
             with transacao(self._con) as con:
-                con.execute("UPDATE cartoes SET status = 'ativo', motivo_bloqueio = NULL, bloqueado_em = NULL "
-                            "WHERE id = ?", (cartao["id"],))
+                con.execute("UPDATE cartoes SET status = 'ativo', motivo_bloqueio = NULL, bloqueado_em = NULL, "
+                            "pin_erros = 0 WHERE id = ?", (cartao["id"],))
                 self._auditar(con, "cartao_desbloqueado", conta_id=cartao["conta_id"],
                               detalhes="{} (antes: {})".format(uid, cartao.get("motivo_bloqueio") or "bloqueado"))
             self.cartoes.inserir(uid, dict(cartao, status="ativo", motivo_bloqueio=None))

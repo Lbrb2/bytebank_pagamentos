@@ -15,7 +15,7 @@ import dados  # noqa: E402
 
 def test_mais_vendidos_top_k_com_heap(cliente):
     cliente.post("/transacoes", json=venda("V1", itens=(("2", 3), ("1", 1))))
-    cliente.post("/transacoes", json=venda("V2", itens=(("1", 2), ("6", 1))))
+    cliente.post("/transacoes", json=venda("V2", itens=(("1", 2), ("6", 1)), senha="1234"))   # R$ 22
     cliente.post("/transacoes", json=venda("V3", itens=(("4", 3),)))
     cliente.post("/estornos", json={"id_transacao": "V3", "terminal": "POS-01"})     # estorno não conta
     top = cliente.get("/relatorios/mais-vendidos?k=2").json()["produtos"]
