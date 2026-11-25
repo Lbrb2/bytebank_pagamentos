@@ -52,16 +52,17 @@ flowchart LR
     subgraph EDGE["1 · Borda — ESP32 / MicroPython"]
         direction TB
         RFID["Leitor RFID RC522"] --> POS
-        TEC["Botão"] --> POS
-        POS["Terminal ByteBank Pay<br/>catálogo · carrinho<br/>fila FIFO offline"]
+        TEC["Teclado 4x4<br/>e botão BOOT"] --> POS
+        POS["Terminal ByteBank Pay<br/>catálogo · carrinho (pilha)<br/>senha · fila FIFO offline"]
         POS --> OLED["Display OLED"]
-        POS --> BUZ["Buzzer e LED"]
+        POS --> BUZ["Buzzer e LED<br/>(opcionais)"]
     end
 
     subgraph API["2 · Backend — Python / FastAPI"]
         direction TB
         ING["Ingestão e validação<br/>dos pacotes JSON"] --> HASH[("Tabelas hash O(1)<br/>cartões · produtos")]
-        ING --> REG["Regras de negócio<br/>saldo · estoque · débito"]
+        ING --> SEG["Segurança<br/>senha PBKDF2 · antifraude"]
+        SEG --> REG["Regras de negócio<br/>saldo · estoque · débito"]
     end
 
     subgraph BD["3 · Persistência — SQLite"]
@@ -69,24 +70,25 @@ flowchart LR
     end
 
     subgraph DASH["4 · Dashboard — Streamlit"]
-        PAINEL["Vendas e telemetria<br/>em tempo real<br/>comandos remotos"]
+        direction TB
+        PAINEL["Vendas, estoque e telemetria<br/>em tempo real<br/>comandos remotos"]
+        USB["Aba Placa (USB)<br/>grava a placa pelo cabo<br/>config · código · console"]
     end
 
-    POS -- "HTTP / Wi-Fi<br/>JSON via urequests.post()" --> ING
+    POS <-- "HTTP / Wi-Fi<br/>vendas em JSON →<br/>← comandos pendentes" --> ING
     REG -- "transação atômica" --> TAB
     TAB --> PAINEL
-    PAINEL -- "comando" --> API
-    API -. "comandos pendentes<br/>(consulta periódica)" .-> POS
+    REG <-. "comandos do gerente" .-> PAINEL
 ```
 
 Versão em imagem: [`docs/arquitetura.png`](docs/arquitetura.png).
 
 | Camada | Tecnologia | Responsabilidade |
 |---|---|---|
-| **Borda** | ESP32 + MicroPython | Ler o botão e o cartão, mostrar catálogo e carrinho, enviar as vendas, guardar vendas offline |
+| **Borda** | ESP32 + MicroPython | Ler o teclado, o botão e o cartão, pedir a senha, mostrar catálogo e carrinho, enviar as vendas, guardar vendas offline |
 | **Backend** | Python + FastAPI | Validar os pacotes, buscar cartão e produtos em O(1), aplicar as regras e gravar no banco |
 | **Persistência** | SQLite | Histórico de transações e itens, saldos, estoque, auditoria e telemetria |
-| **Dashboard** | Streamlit | Vendas e estado do terminal em tempo real; comandos como bloquear o terminal ou recarregar o catálogo |
+| **Dashboard** | Streamlit | Vendas e estado do terminal em tempo real; comandos como bloquear o terminal ou recarregar o catálogo; gravar a placa pelo USB |
 
 O **FastAPI** gera uma página de testes automática (`/docs`), útil para testar a
 API antes de o ESP32 estar pronto. O **SQLite** dispensa servidor de banco e cabe
